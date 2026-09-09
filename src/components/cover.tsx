@@ -33,7 +33,7 @@ export function Cover({
         className={`grid place-items-center bg-gradient-to-br from-surface-2 via-surface to-ink ${className}`}
         aria-label={alt}
       >
-        <span className="select-none text-2xl font-black tracking-tight text-zinc-700">
+        <span className="select-none text-2xl font-black tracking-tight text-brand/60 drop-shadow-[0_0_14px_rgba(34,197,94,0.15)]">
           {alt.trim().charAt(0).toUpperCase() || "?"}
         </span>
       </div>

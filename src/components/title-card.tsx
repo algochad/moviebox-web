@@ -19,7 +19,7 @@ export const TitleCard = memo(function TitleCard({
   return (
     <Link
       href={href}
-      className="tile group relative block w-full shrink-0 cursor-pointer overflow-hidden rounded-xl bg-surface outline-none ring-white/0 focus-visible:ring-2 focus-visible:ring-white/60"
+      className="tile group relative block w-full shrink-0 cursor-pointer overflow-hidden rounded-xl bg-surface outline-none ring-white/0 focus-visible:ring-2 focus-visible:ring-[#4ade80]/70"
       aria-label={item.title}
     >
       <div className="relative aspect-[2/3] w-full overflow-hidden">
@@ -32,8 +32,8 @@ export const TitleCard = memo(function TitleCard({
         <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent opacity-0 transition duration-300 group-hover:opacity-100" />
         {/* Center play affordance */}
         <div className="absolute inset-0 grid place-items-center opacity-0 transition duration-200 group-hover:opacity-100">
-          <span className="grid h-12 w-12 place-items-center rounded-full bg-white/95 shadow-xl shadow-black/50 transition group-hover:scale-110">
-            <PlayIcon width={20} height={20} className="translate-x-0.5 text-black" />
+          <span className="grid h-12 w-12 place-items-center rounded-full bg-brand text-black shadow-[0_0_24px_rgba(34,197,94,0.45)] ring-2 ring-white/25 transition duration-200 group-hover:scale-110 group-hover:bg-brand-hover group-hover:shadow-[0_0_32px_rgba(74,222,128,0.6)]">
+            <PlayIcon width={18} height={18} className="translate-x-0.5" />
           </span>
         </div>
         {/* Bottom info */}
@@ -43,7 +43,7 @@ export const TitleCard = memo(function TitleCard({
           </p>
           <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-300">
             {item.media_type === "series" && (
-              <span className="rounded bg-brand/90 px-1 py-px font-bold text-white">SERIES</span>
+              <span className="rounded bg-brand px-1 py-px font-bold text-black">SERIES</span>
             )}
             {label && <span>{label}</span>}
           </div>

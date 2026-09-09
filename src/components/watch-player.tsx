@@ -1,6 +1,7 @@
 "use client";
 
 import dashjs from "dashjs";
+import Hls from "hls.js";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -8,11 +9,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, preferredSubtitle } from "@/lib/api";
+import { api, mbUrl, preferredSubtitle } from "@/lib/api";
 import { attachSubtitleTrack, parseSubtitleCues } from "@/lib/captions";
 import { formatClock } from "@/lib/format";
 import { clearProgress, entryKey, getHistory, saveProgress } from "@/lib/history";
+import { pickPlayableManifest, rewriteRelativeTo } from "@/lib/playback";
 import type { MediaDetails, Release, StreamsResponse } from "@/lib/types";
+import { ApiError } from "@/lib/types";
 import { ArrowLeft, FullscreenIcon, FullscreenExitIcon, PlayIcon, Spinner, VolumeIcon, VolumeMuteIcon } from "@/components/icons";
 
 type Provider = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix";
@@ -34,6 +37,20 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const dashRef = useRef<dashjs.MediaPlayerClass | null>(null);
+
+  // live-transcode (HLS fallback for HEVC-only sources)
+  const hlsRef = useRef<Hls | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+  const transcodeSessionRef = useRef<string | null>(null);
+  const watchdogFiredRef = useRef(false);
+  const playingSinceRef = useRef(0);
+  const playingRef = useRef(false);
+  // codec picture of the last sniffed DASH manifest: null = unknown/fetch failed
+  const hevcOnlyRef = useRef<boolean | null>(null);
+  const transcodeActiveRef = useRef(false);
+  const [transcodeActive, setTranscodeActiveState] = useState(false);
+  // source the player is currently bound to (for the watchdog fallback)
+  const currentSourceRef = useRef<string | null>(null);
 
   // imperative DOM refs for the 60fps timeline
   const seekRef = useRef<HTMLInputElement>(null);
@@ -62,6 +79,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const nextRef = useRef(nextUp);
   const endedRef = useRef(false);
   const subTrackCleanup = useRef<(() => void) | null>(null);
+
+  const setTranscodeActive = useCallback((active: boolean) => {
+    transcodeActiveRef.current = active;
+    setTranscodeActiveState(active);
+  }, []);
 
   const label = loaded
     ? `${loaded.details.title}${loaded.details.media_type === "series" && season > 0 ? ` · S${season} E${episode}` : ""}`
@@ -110,6 +132,22 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const teardown = useCallback(() => {
     subTrackCleanup.current?.();
     subTrackCleanup.current = null;
+    // stop the live transcode: poll, hls playback, session on the backend
+    const hls = hlsRef.current;
+    if (hls) {
+      hlsRef.current = null;
+      try {
+        hls.destroy();
+      } catch {
+        /* already torn down */
+      }
+    }
+    const session = transcodeSessionRef.current;
+    if (session) {
+      transcodeSessionRef.current = null;
+      void api.transcodeDelete(session).catch(() => undefined);
+    }
+    setTranscodeActive(false);
     const dash = dashRef.current;
     if (dash) {
       dashRef.current = null;
@@ -119,13 +157,18 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         /* already torn down */
       }
     }
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
     const video = videoRef.current;
     if (video) {
       video.pause();
       video.removeAttribute("src");
       video.load();
     }
-  }, []);
+    currentSourceRef.current = null;
+  }, [setTranscodeActive]);
 
   const applyCaptions = useCallback(
     async (resourceId: string | null) => {
@@ -164,6 +207,106 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     [id, provider],
   );
 
+  // ---------------- HEVC fallback: live server-side transcode ----------------
+  const ticketFromUrl = useCallback((sourceUrl: string): string | null => {
+    const m = sourceUrl.match(/\/api\/proxy\/([0-9a-f]{16,40})\//i);
+    return m ? m[1] : null;
+  }, []);
+
+  /** True when the HLS index is fetchable and lists at least one media segment. */
+  const indexHasSegments = useCallback(async (indexUrl: string): Promise<boolean> => {
+    try {
+      const res = await fetch(indexUrl, { cache: "no-store" });
+      if (!res.ok) return false;
+      const text = await res.text();
+      return text
+        .split("\n")
+        .some((line) => line.trim() !== "" && !line.trim().startsWith("#"));
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /** Poll the transcode session until the first segment exists (~20s cap). */
+  const waitForTranscode = useCallback(
+    async (session: string, indexUrl: string): Promise<void> => {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const state = await api.transcodeState(session);
+        if (state.ready && state.segments >= 1) return;
+        if (await indexHasSegments(indexUrl)) return;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      throw new Error("Live transcoding is taking longer than expected — try again.");
+    },
+    [indexHasSegments],
+  );
+
+  const playHls = useCallback(
+    (indexUrl: string) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const startPlayback = () => void video.play().catch(() => undefined);
+      if (Hls.isSupported()) {
+        const hls = new Hls({ maxBufferLength: 40, backBufferLength: 60 });
+        hlsRef.current = hls;
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;
+          teardown();
+          setError("Live transcode playback failed. Retry or pick another source.");
+          setState("error");
+        });
+        hls.on(Hls.Events.MANIFEST_PARSED, startPlayback);
+        hls.loadSource(indexUrl);
+        hls.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        // native HLS (Safari without MSE)
+        video.src = indexUrl;
+        video.load();
+        startPlayback();
+      }
+    },
+    [teardown],
+  );
+
+  /** Start transcoding an HEVC-only source, then play the resulting HLS stream. */
+  const startTranscode = useCallback(
+    async (sourceUrl: string) => {
+      const ticket = ticketFromUrl(sourceUrl);
+      if (!ticket) {
+        setError("This title is HEVC-only and this browser can't decode HEVC. Try another source.");
+        setState("error");
+        return;
+      }
+      setError(null);
+      setState("loading");
+      setTranscodeActive(true);
+      try {
+        const started = await api.transcodeStart(ticket);
+        transcodeSessionRef.current = started.session;
+        const indexUrl = mbUrl(started.m3u8_url);
+        await waitForTranscode(started.session, indexUrl);
+        // torn down or switched to another source while waiting?
+        if (!transcodeActiveRef.current || transcodeSessionRef.current !== started.session) return;
+        playHls(indexUrl);
+      } catch (e) {
+        setTranscodeActive(false);
+        const session = transcodeSessionRef.current;
+        transcodeSessionRef.current = null;
+        if (session) void api.transcodeDelete(session).catch(() => undefined);
+        if (e instanceof ApiError && e.status === 503) {
+          setError(
+            "This title is HEVC-only and this browser can't decode HEVC. Install ffmpeg on the server to enable live transcoding, or try another source.",
+          );
+        } else {
+          setError(e instanceof Error ? e.message : "Failed to start live transcoding");
+        }
+        setState("error");
+      }
+    },
+    [ticketFromUrl, waitForTranscode, playHls, setTranscodeActive],
+  );
+
   const startSource = useCallback(
     async (wantResolution: number | null, candidateOrder: Release[]) => {
       teardown();
@@ -196,6 +339,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
             const { ticket } = (await t.json()) as { ticket: string };
             const origin = new URL(mirror.resolver_url);
             const playUrl = `/api/proxy/${ticket}/a${origin.pathname}${origin.search}`;
+            currentSourceRef.current = playUrl;
             setActive({ source: playUrl, label: rel.filename, releaseKey: `${rel.provider}:${rel.filename}` });
             setState("ready");
             await video.play();
@@ -210,6 +354,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       }
 
       const source = play.play_url;
+      currentSourceRef.current = source;
       setActive({
         source,
         label: play.release.filename,
@@ -223,6 +368,40 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         rel.mirrors.some((m) => m.resolver_url.includes(".mpd"));
 
       if (isDash) {
+        hevcOnlyRef.current = null;
+        watchdogFiredRef.current = false;
+        // Sniff the manifest before dash.js: HEVC-only streams are undecodable
+        // in Chromium/Linux → fall back to live transcode; mixed streams have
+        // their HEVC representations stripped client-side.
+        let manifestText: string | null = null;
+        try {
+          const res = await fetch(source, { cache: "no-store" });
+          if (res.ok) manifestText = await res.text();
+        } catch {
+          /* proxy unreachable — fall through to the original URL */
+        }
+
+        let dashSource = source;
+        if (manifestText !== null) {
+          const decision = pickPlayableManifest(manifestText, video);
+          if (decision.mode === "transcode") {
+            hevcOnlyRef.current = true;
+            void applyCaptions(rel.resource_id ?? null);
+            await startTranscode(source);
+            return;
+          }
+          hevcOnlyRef.current = decision.hevcOnly;
+          if (decision.stripped) {
+            // Relative segment references only resolve from the original
+            // location, so rewrite them absolute before serving via Blob URL.
+            const baseDir = source.slice(0, source.lastIndexOf("/") + 1);
+            const rewritten = rewriteRelativeTo(baseDir, decision.text);
+            const blob = new Blob([rewritten], { type: "application/dash+xml" });
+            blobUrlRef.current = URL.createObjectURL(blob);
+            dashSource = blobUrlRef.current;
+          }
+        }
+
         const dash = dashjs.MediaPlayer().create();
         dashRef.current = dash;
         const fatal = (code: number | undefined) =>
@@ -239,7 +418,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           setState("error");
         });
         try {
-          dash.initialize(video, source, true);
+          dash.initialize(video, dashSource, true);
           dash.setAutoPlay(false);
           void video.play().catch(() => undefined);
         } catch (e) {
@@ -256,7 +435,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       void applyCaptions(rel.resource_id ?? null);
       setState("ready");
     },
-    [provider, id, season, episode, teardown, applyCaptions],
+    [provider, id, season, episode, teardown, applyCaptions, startTranscode],
   );
 
   // ---------------- initial load ----------------
@@ -535,18 +714,22 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     if (!video) return;
     const onPlay = () => {
       endedRef.current = false;
+      playingRef.current = true;
+      playingSinceRef.current = Date.now();
       setState("playing");
       setControls(true);
       pokeControls();
       setupMediaSession();
     };
     const onPause = () => {
+      playingRef.current = false;
       setState("paused");
       setControls(true);
       saveNow();
     };
     const onEnded = () => {
       endedRef.current = true;
+      playingRef.current = false;
       clearProgress(key);
       const next = maybeNextEpisode();
       if (next) {
@@ -602,6 +785,31 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pokeControls, saveNow, maybeNextEpisode, key, showNextUp]);
 
+  // ---------------- watchdog: DASH "playing but black" fallback ----------------
+  // Some browsers partially advertise HEVC support and then never decode a
+  // frame. If a DASH source that is HEVC-only (or of unknown codecs) has been
+  // "playing" for ≥6s with no decoded frame, tear it down and retry that same
+  // source through the live transcoder, once.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (watchdogFiredRef.current) return;
+      if (transcodeActiveRef.current || !playingRef.current) return;
+      if (Date.now() - playingSinceRef.current < 6000) return;
+      if (video.videoWidth > 0 || video.paused) return;
+      if (hevcOnlyRef.current === false) return; // decodable AVC — not our case
+      const activeSource = currentSourceRef.current;
+      if (!activeSource || !(dashRef.current || blobUrlRef.current)) return;
+      watchdogFiredRef.current = true;
+      teardown();
+      setState("loading");
+      setError(null);
+      void startTranscode(activeSource);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [teardown, startTranscode]);
+
   const showSpinner = state === "loading";
   return (
     <div
@@ -642,9 +850,18 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
             {provider === "moviebox" ? "MovieBox" : provider}
             {active ? ` · ${active.label.replace(/\.(mp4|mkv|mpd)$/i, "")}` : ""}
             {subLabel ? ` · CC: ${subLabel}` : ""}
+            {transcodeActive ? " · live transcode" : ""}
           </p>
         </div>
       </div>
+
+      {/* live-transcode status pill (always visible while transcoding) */}
+      {transcodeActive && (
+        <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15 backdrop-blur md:right-7 md:top-7">
+          <span className="h-2 w-2 rounded-full bg-brand" />
+          <span className="text-xs font-medium text-white/80">Live transcode</span>
+        </div>
+      )}
 
       {/* center play / spinner */}
       {showSpinner && (
@@ -804,6 +1021,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
 
             {qualityChoices.length > 1 && (
               <div className="ml-auto hidden items-center gap-1.5 sm:flex">
+                {transcodeActive && (
+                  <span className="flex items-center gap-1.5 rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white/80 ring-1 ring-white/15">
+                    <span className="h-1.5 w-1.5 rounded-full bg-brand" />
+                    Transcode
+                  </span>
+                )}
                 {qualityChoices.map((c) => {
                   const key = `${c.release.provider}:${c.release.filename}`;
                   const isActive = active?.releaseKey === key;

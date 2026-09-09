@@ -41,7 +41,7 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
         </p>
         <button
           onClick={() => window.location.reload()}
-          className="rounded-lg bg-brand px-6 py-2.5 text-sm font-bold text-white transition hover:bg-brand-hover"
+          className="rounded-xl bg-brand px-6 py-2.5 text-sm font-bold text-black shadow-[0_0_22px_rgba(34,197,94,0.2)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_30px_rgba(74,222,128,0.35)]"
         >
           Retry
         </button>
@@ -115,18 +115,18 @@ function WatchCard({ entry }: { entry: WatchEntry }) {
       className="group w-[34%] shrink-0 sm:w-[22%] md:w-[16%] lg:w-[12.5%]"
       aria-label={entry.title}
     >
-      <div className="relative overflow-hidden rounded-xl bg-surface">
+      <div className="relative overflow-hidden rounded-xl bg-surface ring-1 ring-transparent transition duration-200 group-hover:ring-brand/30 group-hover:shadow-[0_10px_28px_rgba(0,0,0,0.5),0_0_26px_rgba(34,197,94,0.18)]">
         <div className="relative aspect-video w-full overflow-hidden">
           {/* Continue-watching tiles use landscape crops of the poster artwork */}
           <PosterBackdrop src={entry.poster} title={entry.title} />
           <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/10 to-transparent" />
-          <div className="absolute inset-0 grid place-items-center opacity-0 transition group-hover:opacity-100">
-            <span className="grid h-11 w-11 place-items-center rounded-full bg-white/95 shadow-lg">
-              <PlayIcon width={17} height={17} className="translate-x-px text-black" />
+          <div className="absolute inset-0 grid place-items-center opacity-0 transition duration-200 group-hover:opacity-100">
+            <span className="grid h-11 w-11 place-items-center rounded-full bg-brand text-black shadow-[0_0_20px_rgba(34,197,94,0.45)] ring-2 ring-white/25 transition duration-200 group-hover:scale-110 group-hover:bg-brand-hover">
+              <PlayIcon width={16} height={16} className="translate-x-px" />
             </span>
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20">
-            <div className="h-full bg-brand" style={{ width: `${pct}%` }} />
+          <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/15">
+            <div className="h-full bg-brand shadow-[0_0_8px_rgba(34,197,94,0.6)]" style={{ width: `${pct}%` }} />
           </div>
         </div>
       </div>
@@ -143,7 +143,7 @@ function PosterBackdrop({ src, title }: { src: string | null; title: string }) {
   if (!src) {
     return (
       <div className="absolute inset-0 grid place-items-center bg-surface-2">
-        <span className="text-lg font-black text-zinc-700">{title.charAt(0)}</span>
+        <span className="text-lg font-black text-brand/50">{title.charAt(0)}</span>
       </div>
     );
   }

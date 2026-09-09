@@ -10,6 +10,7 @@ import {
   SearchResponse,
   StreamsResponse,
   SubtitleOption,
+  TranscodeStartResponse,
 } from "@/lib/types";
 
 const JSON_HEADERS = { "Content-Type": "application/json" } as const;
@@ -57,7 +58,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Start a live server-side transcode of an HEVC-only source. */
+  transcodeStart: (ticket: string) =>
+    request<TranscodeStartResponse>("/transcode/start", {
+      method: "POST",
+      body: JSON.stringify({ ticket }),
+    }),
+  /** Status of an in-flight transcode session. */
+  transcodeState: (session: string) =>
+    request<TranscodeStateResponse>(`/transcode/${encodeURIComponent(session)}/state`),
+  /** Stop and remove a transcode session (fire-and-forget friendly). */
+  transcodeDelete: (session: string) =>
+    request<{ removed: boolean }>(`/transcode/${encodeURIComponent(session)}`, {
+      method: "DELETE",
+    }),
 };
+
+/** Status of an in-flight transcode session. */
+export interface TranscodeStateResponse {
+  session: string;
+  running: boolean;
+  ready: boolean;
+  segments: number;
+  ticket: string;
+}
+
+/**
+ * Convert a backend-relative path (e.g. the transcode `m3u8_url`
+ * `/api/transcode/<session>/index.m3u8`) into the same-origin browser URL that
+ * next.config.ts rewrites back to the backend (`/api/mb/transcode/...`).
+ */
+export function mbUrl(backendPath: string): string {
+  return backendPath.startsWith("/api/") ? `/api/mb${backendPath.slice("/api".length)}` : backendPath;
+}
 
 /** Pick captions for a title; prefers English, falls back to the first option. */
 export function preferredSubtitle(subtitles: SubtitleOption[]): SubtitleOption | null {

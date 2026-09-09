@@ -19,7 +19,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0a0c",
+  themeColor: "#0c0c0d",
   width: "device-width",
   initialScale: 1,
 };
@@ -27,12 +27,14 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={inter.variable}>
-      <body className="min-h-screen bg-ink font-sans text-zinc-100 antialiased">
+      <body className="min-h-screen bg-ink font-sans text-[#f2f2f2] antialiased">
         <Nav />
         <main className="min-h-screen">{children}</main>
         <footer className="border-t border-line py-10">
-          <div className="mx-auto max-w-[1500px] px-5 text-xs leading-relaxed text-zinc-500 md:px-10">
-            <p className="mb-2 font-semibold text-zinc-400">MovieBox Web</p>
+          <div className="mx-auto max-w-[1500px] px-5 text-xs leading-relaxed text-[#6e6e74] md:px-10">
+            <p className="mb-2 font-semibold text-brand">
+              MovieBox <span className="text-[#f2f2f2]">Web</span>
+            </p>
             <p>
               An independent client for publicly available streams. This project does not host or
               store any media, and streams are resolved from third-party sources. Users are

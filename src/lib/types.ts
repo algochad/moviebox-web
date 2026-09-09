@@ -127,6 +127,12 @@ export interface PlayResponse {
   play_url: string;
 }
 
+/** Response of POST /transcode/start for an HEVC-only source. */
+export interface TranscodeStartResponse {
+  session: string;
+  m3u8_url: string;
+}
+
 export interface CaptionsResponse {
   id: string;
   subtitles: SubtitleOption[];

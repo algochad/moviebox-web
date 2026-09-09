@@ -17,6 +17,11 @@ RUN npm run build
 
 # ---- runtime: single container, backend + Next on one origin ----
 FROM node:22-slim AS runtime
+# ffmpeg powers the HEVC -> H.264 live transcode fallback for browsers
+# without HEVC decode.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \

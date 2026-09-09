@@ -27,15 +27,15 @@ export function Nav() {
   return (
     <header
       className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ${
-        scrolled || immersive
-          ? "bg-ink/90 backdrop-blur-md border-b border-line"
+        scrolled
+          ? "bg-ink/90 border-b border-brand/20 backdrop-blur-md"
           : "bg-gradient-to-b from-black/70 to-transparent"
       }`}
     >
       <nav className="mx-auto flex h-16 max-w-[1500px] items-center gap-8 px-5 md:px-10">
-        <Link href="/" className="group flex shrink-0 items-center gap-2" aria-label="MovieBox home">
-          <span className="grid h-8 w-8 place-items-center rounded-md bg-brand transition group-hover:bg-brand-hover">
-            <PlayIcon width={15} height={15} className="translate-x-px text-white" />
+        <Link href="/" className="group flex shrink-0 items-center gap-2.5" aria-label="MovieBox home">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand shadow-[0_0_14px_rgba(34,197,94,0.35)] transition duration-200 group-hover:bg-brand-hover group-hover:shadow-[0_0_20px_rgba(74,222,128,0.5)]">
+            <PlayIcon width={14} height={14} className="translate-x-px text-black" />
           </span>
           <span className="text-[17px] font-black tracking-tight text-white">
             Movie<span className="text-brand">Box</span>
@@ -49,10 +49,10 @@ export function Nav() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition duration-150 ${
                   active
-                    ? "bg-white/10 text-white"
-                    : "text-zinc-300 hover:bg-white/5 hover:text-white"
+                    ? "bg-brand/10 font-semibold text-brand"
+                    : "text-zinc-300 hover:bg-brand/10 hover:text-brand"
                 }`}
               >
                 {link.label}

@@ -105,7 +105,7 @@ export default function SearchPage() {
       <div className="animate-fade-up">
         <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">Search</h1>
         <div className="relative mt-6">
-          <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-surface px-5 py-4 transition focus-within:border-white/40 focus-within:bg-surface-2">
+          <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-surface px-5 py-4 transition duration-200 focus-within:border-brand/40 focus-within:bg-surface-2 focus-within:shadow-[0_0_0_3px_rgba(34,197,94,0.12)]">
             <SearchIcon width={22} height={22} className="shrink-0 text-zinc-400" />
             <input
               ref={inputRef}
@@ -146,7 +146,7 @@ export default function SearchPage() {
             <button
               onClick={() => submit()}
               disabled={searching}
-              className="shrink-0 rounded-xl bg-brand px-6 py-2.5 text-sm font-bold text-white transition hover:bg-brand-hover disabled:opacity-60"
+              className="shrink-0 rounded-xl bg-brand px-6 py-2.5 text-sm font-bold text-black shadow-[0_0_20px_rgba(34,197,94,0.2)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_28px_rgba(74,222,128,0.35)] disabled:opacity-60"
             >
               Search
             </button>
@@ -163,11 +163,11 @@ export default function SearchPage() {
                     setQuery(s);
                     submit(s);
                   }}
-                  className={`flex w-full items-center gap-3 px-5 py-3 text-left text-sm transition ${
-                    i === highlight ? "bg-white/10 text-white" : "text-zinc-300"
+                  className={`flex w-full items-center gap-3 px-5 py-3 text-left text-sm transition duration-150 ${
+                    i === highlight ? "bg-brand/10 font-semibold text-brand" : "text-zinc-300 hover:bg-white/5"
                   }`}
                 >
-                  <SearchIcon width={14} height={14} className="text-zinc-500" />
+                  <SearchIcon width={14} height={14} className={i === highlight ? "text-brand" : "text-zinc-500"} />
                   {s}
                 </button>
               ))}
@@ -184,8 +184,8 @@ export default function SearchPage() {
               onClick={() => switchProvider(p.id)}
               className={`rounded-full px-4 py-1.5 text-xs font-bold transition ${
                 provider === p.id
-                  ? "bg-brand text-white"
-                  : "border border-white/15 text-zinc-300 hover:border-white/40 hover:text-white"
+                  ? "bg-brand text-black shadow-[0_0_14px_rgba(34,197,94,0.25)]"
+                  : "border border-white/15 text-zinc-300 hover:border-brand/40 hover:text-white"
               }`}
             >
               {p.label}
@@ -201,7 +201,7 @@ export default function SearchPage() {
           <p className="mt-1 text-xs text-zinc-500">{error}</p>
           <button
             onClick={() => state && runSearch(state.query, provider, 1, false)}
-            className="mt-4 rounded-lg bg-brand px-5 py-2 text-xs font-bold text-white"
+            className="mt-4 rounded-xl bg-brand px-5 py-2 text-xs font-bold text-black transition duration-200 hover:bg-brand-hover"
           >
             Retry
           </button>
@@ -219,7 +219,7 @@ export default function SearchPage() {
       {!searching && results.length > 0 && (
         <div className="animate-fade-in mt-10">
           <p className="mb-5 text-sm text-zinc-400">
-            <span className="font-bold text-white">{results.length}</span> result{results.length === 1 ? "" : "s"} for{" "}
+            <span className="font-bold text-brand">{results.length}</span> result{results.length === 1 ? "" : "s"} for{" "}
             <span className="font-semibold text-zinc-200">“{state?.query}”</span>
             {state && state.total > results.length ? " (more available)" : ""}
           </p>
@@ -236,7 +236,7 @@ export default function SearchPage() {
               <button
                 onClick={() => state && void runSearch(state.query, provider, state.page + 1, true)}
                 disabled={loadingMore}
-                className="flex items-center gap-2 rounded-xl border border-white/15 px-6 py-3 text-sm font-semibold text-white transition hover:border-white/40 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-xl border border-white/15 px-6 py-3 text-sm font-semibold text-white transition duration-200 hover:border-brand/50 hover:text-brand disabled:opacity-50"
               >
                 {loadingMore ? (
                   <Spinner width={16} height={16} className="animate-spin" />

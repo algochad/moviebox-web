@@ -72,7 +72,7 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
               )}
               {runtime && <span>{runtime}</span>}
               {isSeries && (
-                <span className="rounded border border-white/25 px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wider">
+                <span className="rounded border border-brand/25 bg-brand/10 px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-brand">
                   {episodeCount} Episodes
                 </span>
               )}
@@ -104,12 +104,12 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Link
                 href={startHref}
-                className="flex items-center gap-2.5 rounded-lg bg-white px-7 py-3 text-lg font-bold text-black shadow-xl shadow-black/40 transition hover:bg-zinc-200 active:scale-[0.98]"
+                className="flex items-center gap-2.5 rounded-xl bg-brand px-7 py-3 text-lg font-bold text-black shadow-[0_10px_30px_rgba(0,0,0,0.45),0_0_28px_rgba(34,197,94,0.25)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_38px_rgba(74,222,128,0.45)] active:scale-[0.98]"
               >
                 <PlayIcon width={20} height={20} className="translate-x-px" />
                 {isSeries ? "Start Watching" : "Play"}
               </Link>
-              <button className="flex items-center gap-2.5 rounded-lg bg-white/15 px-5 py-3 text-lg font-semibold text-white backdrop-blur transition hover:bg-white/25">
+              <button className="flex items-center gap-2.5 rounded-xl bg-white/10 px-5 py-3 text-lg font-semibold text-white ring-1 ring-white/15 backdrop-blur transition duration-200 hover:bg-white/20 hover:ring-white/25">
                 <InfoIcon width={20} height={20} />
                 Details
               </button>
@@ -146,12 +146,12 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
               <li key={`${ep.season}-${ep.number}`}>
                 <Link
                   href={watchHref(ep.season, ep.number)}
-                  className="group flex items-center gap-4 rounded-xl p-3 transition hover:bg-white/[0.06]"
+                  className="group flex items-center gap-4 rounded-xl p-3 transition duration-200 hover:-translate-y-0.5 hover:bg-brand/[0.08] hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)]"
                 >
-                  <span className="w-9 shrink-0 text-right font-mono text-lg font-bold text-zinc-500 transition group-hover:text-brand">
+                  <span className="w-9 shrink-0 text-right font-mono text-lg font-bold text-zinc-500 transition duration-200 group-hover:text-brand">
                     {ep.number}
                   </span>
-                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-white/15 bg-white/5 transition group-hover:border-white group-hover:bg-white group-hover:text-black">
+                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-white/15 bg-white/5 text-white transition duration-200 group-hover:border-brand group-hover:bg-brand group-hover:text-black group-hover:shadow-[0_0_16px_rgba(34,197,94,0.45)]">
                     <PlayIcon width={16} height={16} className="translate-x-0.5" />
                   </span>
                   <span className="min-w-0 flex-1">
@@ -206,7 +206,7 @@ function ChevronRightSmall() {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="h-5 w-5 shrink-0 text-zinc-600 transition group-hover:text-zinc-300"
+      className="h-5 w-5 shrink-0 text-zinc-600 transition duration-200 group-hover:text-brand"
     >
       <path d="m9 6 6 6-6 6" />
     </svg>
@@ -250,10 +250,10 @@ function SeasonPicker({
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 rounded-md border border-white/15 bg-surface px-4 py-2 text-sm font-semibold text-white transition hover:border-white/35"
+        className="flex items-center gap-2 rounded-lg border border-white/15 bg-surface px-4 py-2 text-sm font-semibold text-white transition duration-200 hover:border-brand/40 hover:bg-surface-2"
       >
         Season {current?.number}
-        <ChevronDown width={15} height={15} className={`transition ${open ? "rotate-180" : ""}`} />
+        <ChevronDown width={15} height={15} className={`transition duration-200 ${open ? "rotate-180 text-brand" : ""}`} />
       </button>
       {open && (
         <>
@@ -262,7 +262,7 @@ function SeasonPicker({
             className="fixed inset-0 z-10 cursor-default"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] overflow-hidden rounded-lg border border-white/10 bg-surface shadow-2xl shadow-black/60">
+          <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] overflow-hidden rounded-xl border border-white/10 bg-surface-2 p-1 shadow-2xl shadow-black/70">
             {seasons.map((s, i) => (
               <button
                 key={s.number}
@@ -270,8 +270,10 @@ function SeasonPicker({
                   onChange(i);
                   setOpen(false);
                 }}
-                className={`block w-full px-4 py-2.5 text-left text-sm transition hover:bg-white/10 ${
-                  i === value ? "font-bold text-white" : "text-zinc-300"
+                className={`block w-full rounded-lg px-3 py-2 text-left text-sm transition duration-150 ${
+                  i === value
+                    ? "bg-brand/10 font-bold text-brand"
+                    : "text-zinc-300 hover:bg-white/5 hover:text-white"
                 }`}
               >
                 Season {s.number}

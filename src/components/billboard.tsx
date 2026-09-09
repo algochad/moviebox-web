@@ -31,7 +31,9 @@ export function Billboard({
       {/* Foreground artwork is optional when crisp backdrops are unavailable;
           a bottom-anchored portrait crop adds premium depth on wide screens. */}
       <div className="absolute inset-0 hidden bg-gradient-to-r from-ink via-ink/60 to-transparent lg:block" />
-      <div className="absolute inset-0 bg-gradient-to-t from-ink via-transparent to-ink/60" />
+      <div className="absolute inset-0 bg-gradient-to-t from-ink via-transparent to-ink/75" />
+      {/* Green top hairline glow */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand/60 to-transparent shadow-[0_0_14px_rgba(34,197,94,0.45)]" />
 
       {metrics && (metrics.rating || metrics.trending) && (
         <div className="pointer-events-none absolute right-6 top-24 z-10 hidden flex-col items-end gap-1.5 text-right md:flex">
@@ -41,8 +43,8 @@ export function Billboard({
             </span>
           )}
           {metrics.trending != null && (
-            <span className="rounded-full border border-white/20 bg-black/40 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-200 backdrop-blur">
-              #{Math.round(metrics.trending)} Trending
+            <span className="flex items-center gap-1.5 rounded-full border border-brand/25 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-100 backdrop-blur">
+              <span className="h-1 w-1 rounded-full bg-brand" />#{Math.round(metrics.trending)} Trending
             </span>
           )}
         </div>
@@ -61,14 +63,14 @@ export function Billboard({
           <div className="mt-7 flex flex-wrap items-center gap-3">
             <button
               onClick={onPlay}
-              className="group flex items-center gap-2.5 rounded-lg bg-white px-7 py-3 text-lg font-bold text-black shadow-xl shadow-black/40 transition hover:bg-zinc-200 active:scale-[0.98]"
+              className="group flex items-center gap-2.5 rounded-xl bg-brand px-7 py-3 text-lg font-bold text-black shadow-[0_10px_30px_rgba(0,0,0,0.45),0_0_28px_rgba(34,197,94,0.25)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_38px_rgba(74,222,128,0.45)] active:scale-[0.98]"
             >
               <PlayIcon width={20} height={20} className="translate-x-px" />
               Play
             </button>
             <Link
               href={`/title/${item.id.provider}/${item.id.value}`}
-              className="flex items-center gap-2.5 rounded-lg bg-white/20 px-6 py-3 text-lg font-semibold text-white backdrop-blur transition hover:bg-white/30"
+              className="flex items-center gap-2.5 rounded-xl bg-white/10 px-6 py-3 text-lg font-semibold text-white ring-1 ring-white/15 backdrop-blur transition duration-200 hover:bg-white/20 hover:ring-white/25"
             >
               <InfoIcon width={20} height={20} />
               More Info

@@ -87,7 +87,7 @@ export function TitleRow({
           <button
             aria-label="Scroll back"
             onClick={() => scroll(-1)}
-            className="absolute -left-3 top-0 z-20 flex h-full w-12 items-center justify-center rounded-r-xl bg-gradient-to-r from-ink via-ink/70 to-transparent text-white opacity-0 transition group-hover/row:opacity-100"
+            className="absolute -left-3 top-0 z-20 flex h-full w-12 items-center justify-center rounded-r-xl bg-gradient-to-r from-ink via-ink/70 to-transparent text-white opacity-0 transition duration-150 group-hover/row:opacity-100 hover:text-brand"
           >
             <ChevronLeft width={30} height={30} />
           </button>
@@ -112,7 +112,7 @@ export function TitleRow({
           <button
             aria-label="Scroll forward"
             onClick={() => scroll(1)}
-            className="absolute -right-3 top-0 z-20 flex h-full w-12 items-center justify-center rounded-l-xl bg-gradient-to-l from-ink via-ink/70 to-transparent text-white opacity-0 transition group-hover/row:opacity-100"
+            className="absolute -right-3 top-0 z-20 flex h-full w-12 items-center justify-center rounded-l-xl bg-gradient-to-l from-ink via-ink/70 to-transparent text-white opacity-0 transition duration-150 group-hover/row:opacity-100 hover:text-brand"
           >
             <ChevronRight width={30} height={30} />
           </button>
