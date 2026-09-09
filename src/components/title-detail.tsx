@@ -3,15 +3,16 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Cover } from "@/components/cover";
-import {
-  CalendarIcon,
-  ChevronDown,
-  InfoIcon,
-  PlayIcon,
-  StarIcon,
-} from "@/components/icons";
+import { ChevronDown, InfoIcon, PlayIcon } from "@/components/icons";
 import { formatRuntime } from "@/lib/format";
 import type { MediaDetails, ProviderId, Season } from "@/lib/types";
+
+function catalogTag(provider: ProviderId, value: string): string {
+  const prefix =
+    provider === "moviebox" ? "MB" : provider === "fourkhdhub" ? "4K" : "CT";
+  const trimmed = value.replace(/^mb-|^4k-|^bdix[-_]/i, "");
+  return `${prefix}-${trimmed}`;
+}
 
 export function TitleDetail({ details }: { details: MediaDetails }) {
   const [seasonIdx, setSeasonIdx] = useState(0);
@@ -28,8 +29,14 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
 
   const startHref = watchHref(activeSeason?.number ?? 0, activeSeason?.episodes[0]?.number ?? 0);
 
+  const metaStrip: string[] = [];
+  if (details.imdb_rating) metaStrip.push(`${details.imdb_rating}★`);
+  if (details.year) metaStrip.push(details.year);
+  if (runtime) metaStrip.push(runtime);
+  if (isSeries && episodeCount > 0) metaStrip.push(`${episodeCount} EPS`);
+
   return (
-    <div className="pb-24">
+    <div className="pb-28">
       {/* ---------- Hero ---------- */}
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 scale-110">
@@ -41,53 +48,52 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
             priority
           />
         </div>
-        <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/40 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-ink/90 via-ink/40 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/70 to-ink/40" />
+        <div className="absolute inset-0 bg-gradient-to-r from-ink via-ink/80 to-ink/30" />
+        {/* Faint green wash, top-right */}
+        <div className="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-brand/[0.06] blur-3xl" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand/50 to-transparent" />
 
-        <div className="relative z-10 mx-auto flex max-w-[1500px] flex-col gap-8 px-5 pb-10 pt-24 md:flex-row md:items-end md:px-10 md:pt-32">
-          {/* Poster */}
-          <div className="animate-fade-up w-44 shrink-0 overflow-hidden rounded-xl shadow-2xl shadow-black/60 ring-1 ring-white/10 sm:w-56 md:w-64">
-            <div className="aspect-[2/3] w-full">
-              <Cover src={details.poster_url} alt={details.title} sizes="260px" priority />
+        <div className="relative z-10 mx-auto flex w-full max-w-[1560px] flex-col gap-10 px-5 pb-14 pt-24 md:flex-row md:items-end md:gap-12 md:px-8 md:pt-36 xl:px-12">
+          {/* Poster — corner ticks + catalog tag below */}
+          <div className="animate-fade-up w-44 shrink-0 sm:w-52 md:w-60">
+            <div className="tick-corners relative overflow-hidden rounded-lg bg-surface ring-1 ring-line shadow-[0_24px_60px_rgba(0,0,0,0.6)]">
+              <div className="aspect-[2/3] w-full">
+                <Cover src={details.poster_url} alt={details.title} sizes="260px" priority />
+              </div>
             </div>
+            <p className="mono-meta mt-2.5 flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+              <span>{catalogTag(details.id.provider, details.id.value)}</span>
+              <span className="text-zinc-600">{isSeries ? "SERIES" : "FILM"}</span>
+            </p>
           </div>
 
-          {/* Info */}
-          <div className="animate-fade-up flex-1 space-y-4">
-            <h1 className="text-balance text-3xl font-black tracking-tight text-white sm:text-5xl">
+          {/* Info column */}
+          <div className="animate-fade-up min-w-0 flex-1 space-y-5">
+            <p className="eyebrow">
+              {providerLabel(details.id.provider)} · {isSeries ? "Series" : "Film"}
+            </p>
+
+            <h1 className="display-title text-balance text-[clamp(2.2rem,5vw,4.6rem)]">
               {details.title}
             </h1>
 
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-zinc-300">
-              {details.imdb_rating && (
-                <span className="flex items-center gap-1 font-semibold text-amber-400">
-                  <StarIcon width={15} height={15} /> {details.imdb_rating}
-                </span>
-              )}
-              {details.year && (
-                <span className="flex items-center gap-1">
-                  <CalendarIcon width={14} height={14} className="text-zinc-500" />
-                  {details.year}
-                </span>
-              )}
-              {runtime && <span>{runtime}</span>}
-              {isSeries && (
-                <span className="rounded border border-brand/25 bg-brand/10 px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-brand">
-                  {episodeCount} Episodes
-                </span>
-              )}
-              <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                <ProviderDot provider={details.id.provider} /> {providerLabel(details.id.provider)}
-              </span>
-            </div>
+            {/* Mono meta strip */}
+            {metaStrip.length > 0 && (
+              <p className="mono-meta text-[12px] uppercase tracking-[0.16em] text-zinc-400">
+                {metaStrip.map((part, i) => (
+                  <span key={part}>
+                    {i > 0 && <span className="mx-2 text-zinc-600">·</span>}
+                    <span className={part.endsWith("★") ? "text-brand" : ""}>{part}</span>
+                  </span>
+                ))}
+              </p>
+            )}
 
             {details.genres.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {details.genres.slice(0, 5).map((g) => (
-                  <span
-                    key={g}
-                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium text-zinc-200 backdrop-blur"
-                  >
+                  <span key={g} className="chip mono-meta text-[11px] uppercase tracking-[0.08em] text-zinc-300">
                     {g}
                   </span>
                 ))}
@@ -95,103 +101,126 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
             )}
 
             {details.tagline && (
-              <p className="text-sm font-medium italic text-zinc-400">“{details.tagline}”</p>
+              <p className="border-l-2 border-brand/50 pl-3 text-sm italic leading-relaxed text-zinc-400">
+                “{details.tagline}”
+              </p>
             )}
-            <p className="max-w-3xl text-[15px] leading-relaxed text-zinc-200">
+
+            <p className="max-w-3xl text-[15px] leading-relaxed text-[#b4b4b8]">
               {details.description || "No synopsis available for this title yet."}
             </p>
 
+            {/* CTAs */}
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Link
                 href={startHref}
-                className="flex items-center gap-2.5 rounded-xl bg-brand px-7 py-3 text-lg font-bold text-black shadow-[0_10px_30px_rgba(0,0,0,0.45),0_0_28px_rgba(34,197,94,0.25)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_38px_rgba(74,222,128,0.45)] active:scale-[0.98]"
+                className="btn-solid mono-meta px-7 py-3 text-[13px] font-bold uppercase tracking-[0.14em]"
               >
-                <PlayIcon width={20} height={20} className="translate-x-px" />
-                {isSeries ? "Start Watching" : "Play"}
+                <PlayIcon width={15} height={15} className="translate-x-px" />
+                {isSeries ? "Start Series" : "Play"}
               </Link>
-              <button className="flex items-center gap-2.5 rounded-xl bg-white/10 px-5 py-3 text-lg font-semibold text-white ring-1 ring-white/15 backdrop-blur transition duration-200 hover:bg-white/20 hover:ring-white/25">
-                <InfoIcon width={20} height={20} />
+              <button className="btn-glass mono-meta px-5 py-3 text-[13px] font-semibold uppercase tracking-[0.14em]">
+                <InfoIcon width={15} height={15} />
                 Details
               </button>
             </div>
 
-            {details.stars && (
-              <p className="max-w-3xl text-sm text-zinc-400">
-                <span className="font-semibold text-zinc-300">Cast: </span>
-                {details.stars}
-              </p>
-            )}
-            {details.director && (
-              <p className="text-sm text-zinc-400">
-                <span className="font-semibold text-zinc-300">Director: </span>
-                {details.director}
-              </p>
+            {/* Cast / director — mono definition rows under a hairline */}
+            {(details.director || details.stars) && (
+              <dl className="space-y-2.5 border-t border-line pt-4">
+                {details.director && (
+                  <div className="flex gap-5">
+                    <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Director
+                    </dt>
+                    <dd className="min-w-0 text-[13px] leading-relaxed text-zinc-300">
+                      {details.director}
+                    </dd>
+                  </div>
+                )}
+                {details.stars && (
+                  <div className="flex gap-5">
+                    <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Cast
+                    </dt>
+                    <dd className="min-w-0 text-[13px] leading-relaxed text-zinc-300">
+                      {details.stars}
+                    </dd>
+                  </div>
+                )}
+              </dl>
             )}
           </div>
         </div>
       </section>
 
-      {/* ---------- Episodes ---------- */}
-      {isSeries && seasons.length > 0 && (
-        <section className="mx-auto mt-10 max-w-[1500px] px-5 md:px-10">
-          <div className="mb-5 flex items-center gap-4">
-            <h2 className="text-xl font-bold tracking-tight text-white">Episodes</h2>
-            {seasons.length > 1 && (
-              <SeasonPicker seasons={seasons} value={seasonIdx} onChange={setSeasonIdx} />
-            )}
-          </div>
+      {/* ---------- Detail sections: same gutters as the hero ---------- */}
+      <div className="mx-auto mt-12 w-full max-w-[1560px] space-y-12 px-5 md:px-8 xl:px-12">
+        {isSeries && seasons.length > 0 && (
+          <section aria-label="Episodes">
+            <div className="mb-5 flex items-center gap-5">
+              <div>
+                <p className="eyebrow mb-1.5 flex items-center gap-2">
+                  <span className="h-px w-5 bg-brand" />
+                  Season Track
+                </p>
+                <h2 className="text-2xl font-black tracking-tight text-zinc-50">Episodes</h2>
+              </div>
+              {seasons.length > 1 && (
+                <div className="ml-auto">
+                  <SeasonPicker seasons={seasons} value={seasonIdx} onChange={setSeasonIdx} />
+                </div>
+              )}
+            </div>
 
-          <ol className="space-y-2">
-            {activeSeason?.episodes.map((ep, i) => (
-              <li key={`${ep.season}-${ep.number}`}>
-                <Link
-                  href={watchHref(ep.season, ep.number)}
-                  className="group flex items-center gap-4 rounded-xl p-3 transition duration-200 hover:-translate-y-0.5 hover:bg-brand/[0.08] hover:shadow-[0_6px_22px_rgba(0,0,0,0.35)]"
-                >
-                  <span className="w-9 shrink-0 text-right font-mono text-lg font-bold text-zinc-500 transition duration-200 group-hover:text-brand">
-                    {ep.number}
-                  </span>
-                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-white/15 bg-white/5 text-white transition duration-200 group-hover:border-brand group-hover:bg-brand group-hover:text-black group-hover:shadow-[0_0_16px_rgba(34,197,94,0.45)]">
-                    <PlayIcon width={16} height={16} className="translate-x-0.5" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-semibold text-zinc-100 group-hover:text-white">
+            <ol className="divide-y divide-line/70 border-y border-line">
+              {activeSeason?.episodes.map((ep) => (
+                <li key={`${ep.season}-${ep.number}`} className="group relative">
+                  <Link
+                    href={watchHref(ep.season, ep.number)}
+                    className="flex items-center gap-4 px-2 py-3 transition duration-150 hover:bg-white/[0.04]"
+                  >
+                    {/* Left green tick on hover */}
+                    <span className="pointer-events-none absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-full bg-brand opacity-0 shadow-[0_0_10px_rgba(34,197,94,0.9)] transition duration-150 group-hover:opacity-100" />
+                    {/* Mono number square */}
+                    <span className="mono-meta grid h-9 w-9 shrink-0 place-items-center rounded-[4px] border border-line text-[12px] font-bold text-zinc-400 transition duration-150 group-hover:border-brand/40 group-hover:text-brand">
+                      {String(ep.number).padStart(2, "0")}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-zinc-100 transition duration-150 group-hover:text-white">
                       {ep.title ?? `Episode ${ep.number}`}
                     </span>
-                    <span className="text-xs text-zinc-500">
+                    <span className="mono-meta hidden text-[10px] uppercase tracking-[0.16em] text-zinc-500 sm:block">
                       {String(ep.season).padStart(2, "0")} · {String(ep.number).padStart(2, "0")}
                     </span>
-                  </span>
-                  <ChevronRightSmall />
-                </Link>
-                {i < (activeSeason?.episodes.length ?? 0) - 1 && (
-                  <div className="ml-[92px] border-t border-white/5" />
-                )}
-              </li>
-            ))}
+                    <ChevronRightSmall />
+                  </Link>
+                </li>
+              ))}
+            </ol>
             {activeSeason?.episodes.length === 0 && (
-              <p className="py-8 text-center text-zinc-500">Episode list unavailable for this season.</p>
+              <p className="py-8 text-center font-mono text-sm text-zinc-500">
+                Episode list unavailable for this season.
+              </p>
             )}
-          </ol>
-        </section>
-      )}
+          </section>
+        )}
 
-      {/* ---------- Audio languages ---------- */}
-      {details.dubs.length > 1 && (
-        <section className="mx-auto mt-10 max-w-[1500px] px-5 md:px-10">
-          <h2 className="mb-3 text-lg font-bold tracking-tight text-white">Audio</h2>
-          <div className="flex flex-wrap gap-2">
-            {details.dubs.map((dub) => (
-              <span
-                key={dub.subject_id}
-                className="rounded-full border border-white/10 bg-surface px-3 py-1.5 text-xs font-medium text-zinc-300"
-              >
-                {dub.language}
-              </span>
-            ))}
-          </div>
-        </section>
-      )}
+        {details.dubs.length > 1 && (
+          <section aria-label="Audio languages">
+            <p className="eyebrow mb-3">Audio</p>
+            <div className="flex flex-wrap gap-2">
+              {details.dubs.map((dub) => (
+                <span
+                  key={dub.subject_id}
+                  className="chip mono-meta text-[11px] uppercase tracking-[0.08em] text-zinc-300"
+                >
+                  {dub.language}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   );
 }
@@ -206,17 +235,10 @@ function ChevronRightSmall() {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="h-5 w-5 shrink-0 text-zinc-600 transition duration-200 group-hover:text-brand"
+      className="h-4 w-4 shrink-0 text-zinc-600 transition duration-200 group-hover:text-brand"
     >
       <path d="m9 6 6 6-6 6" />
     </svg>
-  );
-}
-
-function ProviderDot({ provider }: { provider: ProviderId }) {
-  const on = provider !== "fourkhdhub" && !provider.startsWith("bdix");
-  return (
-    <span className={`inline-block h-2 w-2 rounded-full ${on ? "bg-emerald-400" : "bg-zinc-500"}`} />
   );
 }
 
@@ -250,10 +272,16 @@ function SeasonPicker({
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 rounded-lg border border-white/15 bg-surface px-4 py-2 text-sm font-semibold text-white transition duration-200 hover:border-brand/40 hover:bg-surface-2"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="btn-glass mono-meta gap-2 px-3.5 py-2 text-[12px] font-semibold uppercase tracking-[0.12em]"
       >
         Season {current?.number}
-        <ChevronDown width={15} height={15} className={`transition duration-200 ${open ? "rotate-180 text-brand" : ""}`} />
+        <ChevronDown
+          width={14}
+          height={14}
+          className={`transition duration-200 ${open ? "rotate-180 text-brand" : ""}`}
+        />
       </button>
       {open && (
         <>
@@ -262,22 +290,30 @@ function SeasonPicker({
             className="fixed inset-0 z-10 cursor-default"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] overflow-hidden rounded-xl border border-white/10 bg-surface-2 p-1 shadow-2xl shadow-black/70">
+          <div
+            role="listbox"
+            aria-label="Seasons"
+            className="absolute right-0 top-full z-20 mt-2 min-w-[200px] overflow-hidden rounded-lg border border-line bg-raised/95 p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.7)] backdrop-blur"
+          >
             {seasons.map((s, i) => (
               <button
                 key={s.number}
+                role="option"
+                aria-selected={i === value}
                 onClick={() => {
                   onChange(i);
                   setOpen(false);
                 }}
-                className={`block w-full rounded-lg px-3 py-2 text-left text-sm transition duration-150 ${
+                className={`flex w-full items-center justify-between gap-4 rounded-[4px] px-3 py-2 text-left text-sm transition duration-150 ${
                   i === value
                     ? "bg-brand/10 font-bold text-brand"
                     : "text-zinc-300 hover:bg-white/5 hover:text-white"
                 }`}
               >
-                Season {s.number}
-                <span className="ml-2 text-xs font-normal text-zinc-500">{s.episodes.length} eps</span>
+                <span className="mono-meta tracking-[0.08em]">S{String(s.number).padStart(2, "0")}</span>
+                <span className="text-xs font-normal text-zinc-500">
+                  {s.episodes.length} eps
+                </span>
               </button>
             ))}
           </div>

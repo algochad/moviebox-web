@@ -124,3 +124,11 @@ export const ClapperIcon = (p: P) => (
     <path d="m8.5 3 2.5 6M15 6l3 1.5L14.5 12M3 8.5V19a1.5 1.5 0 0 0 1.5 1.5h15A1.5 1.5 0 0 0 21 19v-6.5" />
   </svg>
 );
+
+/** Subtitles caption panel: squared box with two caption lines. */
+export const CcIcon = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4.5" width="18" height="15" rx="2" />
+    <path d="M6.5 10h11M6.5 14h7.5" />
+  </svg>
+);

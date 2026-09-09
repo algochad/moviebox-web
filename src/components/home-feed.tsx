@@ -30,18 +30,18 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
   if (error || !feed) {
     return (
       <div className="flex min-h-[80vh] flex-col items-center justify-center gap-5 px-6 text-center">
-        <p className="text-5xl">📡</p>
-        <h1 className="text-2xl font-bold">Backend not reachable</h1>
+        <p className="mono-meta text-[11px] font-bold tracking-[0.3em] text-brand">// SIGNAL LOST</p>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Backend not reachable</h1>
         <p className="max-w-md text-sm leading-relaxed text-zinc-400">
           {error ?? "The MovieBox Rust backend did not respond."} Start it with{" "}
-          <code className="rounded bg-surface-2 px-1.5 py-0.5 text-zinc-300">npm run dev</code>{" "}
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-zinc-300">npm run dev</code>{" "}
           (launches both servers) or{" "}
-          <code className="rounded bg-surface-2 px-1.5 py-0.5 text-zinc-300">npm run backend</code>
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-zinc-300">npm run backend</code>
           , then reload.
         </p>
         <button
           onClick={() => window.location.reload()}
-          className="rounded-xl bg-brand px-6 py-2.5 text-sm font-bold text-black shadow-[0_0_22px_rgba(34,197,94,0.2)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_30px_rgba(74,222,128,0.35)]"
+          className="btn-solid mono-meta px-6 py-2.5 text-[12px] font-bold uppercase tracking-[0.14em]"
         >
           Retry
         </button>
@@ -55,16 +55,18 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
 
   if (!hero) {
     return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <p className="text-zinc-500">No titles available right now.</p>
+      <div className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="mono-meta text-[11px] font-bold tracking-[0.3em] text-brand">// EMPTY SHELF</p>
+        <p className="text-sm text-zinc-500">No titles available right now — check back after the catalog syncs.</p>
       </div>
     );
   }
 
   const heroMetrics = metricOf(hero, metrics);
+  const hasContinue = ready && history.length > 0;
 
   return (
-    <div className="pb-20">
+    <div>
       <Billboard
         item={hero}
         metrics={{ rating: heroMetrics.rating ?? null, trending: heroMetrics.trending ?? null }}
@@ -74,12 +76,22 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
         }
       />
 
-      <div className="relative z-10 mx-auto -mt-24 max-w-[1500px] space-y-10 px-5 md:-mt-16 md:px-10">
-        {ready && history.length > 0 && (
-          <section>
-            <h2 className="mb-3 text-lg font-bold tracking-tight text-zinc-50 md:text-xl">
-              Continue Watching
-            </h2>
+      {/* Feed docks over the hero fade; gutters match the hero column exactly */}
+      <div className="relative z-10 mx-auto -mt-24 w-full max-w-[1560px] space-y-12 px-5 pb-28 md:-mt-16 md:px-8 xl:px-12">
+        {hasContinue && (
+          <section aria-label="Continue Watching">
+            <header className="mb-4 flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="mono-meta text-[11px] font-bold tracking-[0.16em] text-brand"
+              >
+                01
+              </span>
+              <h2 className="shrink-0 text-lg font-extrabold tracking-tight text-zinc-50">
+                Continue Watching
+              </h2>
+              <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-line" />
+            </header>
             <div className="scrollbar-none flex gap-3 overflow-x-auto pb-1">
               {history.map((entry) => (
                 <WatchCard key={entryKey(entry)} entry={entry} />
@@ -88,11 +100,21 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
           </section>
         )}
 
-        {metricRows.map((row) => (
-          <TitleRow key={row.key} label={row.label} items={row.items} />
+        {metricRows.map((row, i) => (
+          <TitleRow
+            key={row.key}
+            label={row.label}
+            items={row.items}
+            index={i + 1 + (hasContinue ? 1 : 0)}
+          />
         ))}
-        {typeRows.map((row) => (
-          <TitleRow key={row.key} label={row.label} items={row.items} />
+        {typeRows.map((row, i) => (
+          <TitleRow
+            key={row.key}
+            label={row.label}
+            items={row.items}
+            index={metricRows.length + i + 1 + (hasContinue ? 1 : 0)}
+          />
         ))}
       </div>
     </div>
@@ -115,25 +137,35 @@ function WatchCard({ entry }: { entry: WatchEntry }) {
       className="group w-[34%] shrink-0 sm:w-[22%] md:w-[16%] lg:w-[12.5%]"
       aria-label={entry.title}
     >
-      <div className="relative overflow-hidden rounded-xl bg-surface ring-1 ring-transparent transition duration-200 group-hover:ring-brand/30 group-hover:shadow-[0_10px_28px_rgba(0,0,0,0.5),0_0_26px_rgba(34,197,94,0.18)]">
-        <div className="relative aspect-video w-full overflow-hidden">
+      <div className="tick-corners relative overflow-hidden rounded-lg bg-surface ring-1 ring-line transition duration-300 hover:ring-brand/50 hover:shadow-[0_10px_24px_rgba(0,0,0,0.4),0_0_20px_rgba(34,197,94,0.12)]">
+        <div className="relative aspect-video w-full overflow-hidden rounded-lg">
           {/* Continue-watching tiles use landscape crops of the poster artwork */}
           <PosterBackdrop src={entry.poster} title={entry.title} />
           <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/10 to-transparent" />
-          <div className="absolute inset-0 grid place-items-center opacity-0 transition duration-200 group-hover:opacity-100">
-            <span className="grid h-11 w-11 place-items-center rounded-full bg-brand text-black shadow-[0_0_20px_rgba(34,197,94,0.45)] ring-2 ring-white/25 transition duration-200 group-hover:scale-110 group-hover:bg-brand-hover">
-              <PlayIcon width={16} height={16} className="translate-x-px" />
-            </span>
-          </div>
-          <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/15">
-            <div className="h-full bg-brand shadow-[0_0_8px_rgba(34,197,94,0.6)]" style={{ width: `${pct}%` }} />
+          {/* Square green play chip on hover */}
+          <span className="pointer-events-none absolute right-2 top-2 z-10 grid h-8 w-8 -translate-y-1.5 place-items-center rounded-[6px] bg-brand text-black opacity-0 shadow-[0_0_16px_rgba(34,197,94,0.5)] transition duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-hover:bg-brand-hover">
+            <PlayIcon width={13} height={13} className="translate-x-px" />
+          </span>
+          <span className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-[4px] bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-[0.14em] text-brand ring-1 ring-brand/25 backdrop-blur-sm">
+            {entry.mediaType === "series"
+              ? `S${String(entry.season).padStart(2, "0")} E${String(entry.episode).padStart(2, "0")}`
+              : "FILM"}
+          </span>
+          {/* Progress hairline */}
+          <div className="absolute inset-x-0 bottom-0 h-[2px] bg-white/15">
+            <div
+              className="h-full bg-brand shadow-[0_0_8px_rgba(34,197,94,0.8)] transition-shadow duration-200 group-hover:shadow-[0_0_12px_rgba(34,197,94,1)]"
+              style={{ width: `${pct}%` }}
+            />
           </div>
         </div>
       </div>
       <p className="mt-2 line-clamp-1 text-[13px] font-medium text-zinc-300 group-hover:text-white">
-        {entry.mediaType === "series"
-          ? `${entry.title} — S${entry.season} E${entry.episode}`
-          : entry.title}
+        {entry.title}
+      </p>
+      <p className="mono-meta mt-0.5 flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-zinc-500">
+        <span>{entry.mediaType === "series" ? "RESUME" : "REWATCH"}</span>
+        <span className="text-brand">{pct}%</span>
       </p>
     </Link>
   );

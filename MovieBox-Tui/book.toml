@@ -1,0 +1,17 @@
+[book]
+title = "MovieBox-TUI Documentation"
+authors = ["Samir <mesamirh>"]
+language = "en"
+src = "docs"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/mesamirh/MovieBox-Tui"
+edit-url-template = "https://github.com/mesamirh/MovieBox-Tui/edit/main/{path}"
+site-url = "/MovieBox-Tui/"
+additional-css = ["docs/custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1

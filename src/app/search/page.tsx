@@ -100,13 +100,22 @@ export default function SearchPage() {
   const showSuggest = suggestOpen && suggestions.length > 0 && !searching;
 
   return (
-    <div className="mx-auto min-h-screen max-w-[1500px] px-5 pb-24 pt-28 md:px-10">
+    <div className="mx-auto min-h-screen w-full max-w-[1560px] px-5 pb-28 pt-24 md:px-8 md:pt-28 xl:px-12">
       {/* ---------- Search head ---------- */}
       <div className="animate-fade-up">
-        <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">Search</h1>
-        <div className="relative mt-6">
-          <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-surface px-5 py-4 transition duration-200 focus-within:border-brand/40 focus-within:bg-surface-2 focus-within:shadow-[0_0_0_3px_rgba(34,197,94,0.12)]">
-            <SearchIcon width={22} height={22} className="shrink-0 text-zinc-400" />
+        <p className="eyebrow mb-3 flex items-center gap-2">
+          <span className="h-px w-5 bg-brand" />
+          Catalog Search
+        </p>
+        <h1 className="display-title text-[clamp(2rem,4vw,3.25rem)]">Search</h1>
+
+        <div className="relative mt-7 max-w-3xl">
+          {/* Terminal-style query bar */}
+          <div className="glass-panel flex items-center gap-3 rounded-lg px-4 py-3.5 transition duration-200 focus-within:border-brand/40 focus-within:shadow-[0_0_0_3px_rgba(34,197,94,0.1),0_0_24px_rgba(34,197,94,0.06)]">
+            <SearchIcon width={18} height={18} className="shrink-0 text-brand" />
+            <span className="mono-meta shrink-0 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-600">
+              {">"}
+            </span>
             <input
               ref={inputRef}
               value={query}
@@ -123,10 +132,11 @@ export default function SearchPage() {
                   setSuggestOpen(false);
                 }
               }}
-              placeholder="Titles, actors, genres…"
-              className="w-full bg-transparent text-lg text-white placeholder-zinc-500 outline-none"
+              placeholder="SEARCH CATALOG"
+              className="mono-meta w-full bg-transparent text-[15px] text-white placeholder-zinc-500 outline-none"
               autoComplete="off"
               spellCheck={false}
+              aria-label="Search catalog"
             />
             {query && (
               <button
@@ -138,23 +148,23 @@ export default function SearchPage() {
                   setSuggestOpen(false);
                   inputRef.current?.focus();
                 }}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-zinc-400 transition hover:bg-white/10 hover:text-white"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-[6px] border border-line text-zinc-400 transition hover:border-brand/40 hover:bg-white/5 hover:text-brand"
               >
-                <XIcon width={16} height={16} />
+                <XIcon width={15} height={15} />
               </button>
             )}
             <button
               onClick={() => submit()}
               disabled={searching}
-              className="shrink-0 rounded-xl bg-brand px-6 py-2.5 text-sm font-bold text-black shadow-[0_0_20px_rgba(34,197,94,0.2)] transition duration-200 hover:bg-brand-hover hover:shadow-[0_0_28px_rgba(74,222,128,0.35)] disabled:opacity-60"
+              className="btn-solid mono-meta shrink-0 px-5 py-2 text-[12px] font-bold uppercase tracking-[0.14em] disabled:cursor-default disabled:opacity-60"
             >
-              Search
+              {searching ? "Querying…" : "Search"}
             </button>
           </div>
 
-          {/* Suggestions */}
+          {/* Suggestions — mono rows with a left tick on the active one */}
           {showSuggest && (
-            <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-2xl border border-white/10 bg-surface shadow-2xl shadow-black/70">
+            <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-line bg-raised/95 shadow-[0_18px_50px_rgba(0,0,0,0.7)] backdrop-blur">
               {suggestions.map((s, i) => (
                 <button
                   key={s}
@@ -163,11 +173,21 @@ export default function SearchPage() {
                     setQuery(s);
                     submit(s);
                   }}
-                  className={`flex w-full items-center gap-3 px-5 py-3 text-left text-sm transition duration-150 ${
+                  className={`relative flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition duration-150 ${
                     i === highlight ? "bg-brand/10 font-semibold text-brand" : "text-zinc-300 hover:bg-white/5"
                   }`}
                 >
-                  <SearchIcon width={14} height={14} className={i === highlight ? "text-brand" : "text-zinc-500"} />
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-brand transition-opacity duration-150 ${
+                      i === highlight ? "opacity-100" : "opacity-0"
+                    }`}
+                  />
+                  <SearchIcon
+                    width={13}
+                    height={13}
+                    className={i === highlight ? "text-brand" : "text-zinc-500"}
+                  />
                   {s}
                 </button>
               ))}
@@ -177,15 +197,18 @@ export default function SearchPage() {
 
         {/* Provider chips */}
         <div className="mt-5 flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Sources</span>
+          <span className="mono-meta text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-600">
+            Source:
+          </span>
           {PROVIDERS.map((p) => (
             <button
               key={p.id}
               onClick={() => switchProvider(p.id)}
-              className={`rounded-full px-4 py-1.5 text-xs font-bold transition ${
+              aria-pressed={provider === p.id}
+              className={`mono-meta text-[11px] uppercase tracking-[0.1em] transition duration-150 ${
                 provider === p.id
-                  ? "bg-brand text-black shadow-[0_0_14px_rgba(34,197,94,0.25)]"
-                  : "border border-white/15 text-zinc-300 hover:border-brand/40 hover:text-white"
+                  ? "rounded-[4px] bg-brand px-3 py-1.5 font-bold text-black shadow-[0_0_14px_rgba(34,197,94,0.25)]"
+                  : "rounded-[4px] border border-line bg-white/[0.03] px-3 py-1.5 font-semibold text-zinc-400 hover:border-brand/40 hover:text-white"
               }`}
             >
               {p.label}
@@ -196,12 +219,15 @@ export default function SearchPage() {
 
       {/* ---------- Results ---------- */}
       {error && (
-        <div className="mt-10 rounded-2xl border border-white/10 bg-surface p-6 text-center">
-          <p className="text-sm text-zinc-300">Search failed on this source.</p>
-          <p className="mt-1 text-xs text-zinc-500">{error}</p>
+        <div className="mt-10 max-w-3xl rounded-lg border border-line bg-surface/60 p-6 text-center">
+          <p className="mono-meta text-[11px] font-bold uppercase tracking-[0.24em] text-brand">
+            // Query Failed
+          </p>
+          <p className="mt-2 text-sm text-zinc-300">Search failed on this source.</p>
+          <p className="mt-1 font-mono text-xs text-zinc-500">{error}</p>
           <button
             onClick={() => state && runSearch(state.query, provider, 1, false)}
-            className="mt-4 rounded-xl bg-brand px-5 py-2 text-xs font-bold text-black transition duration-200 hover:bg-brand-hover"
+            className="btn-solid mono-meta mt-4 px-5 py-2 text-[12px] font-bold uppercase tracking-[0.14em]"
           >
             Retry
           </button>
@@ -209,21 +235,25 @@ export default function SearchPage() {
       )}
 
       {searching && (
-        <div className="mt-16 grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7">
+        <div className="mt-12 grid grid-cols-3 gap-3.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7">
           {Array.from({ length: 14 }).map((_, i) => (
-            <div key={i} className="skeleton aspect-[2/3] rounded-xl" />
+            <div key={i} className="skeleton aspect-[2/3] rounded-lg" />
           ))}
         </div>
       )}
 
       {!searching && results.length > 0 && (
         <div className="animate-fade-in mt-10">
-          <p className="mb-5 text-sm text-zinc-400">
-            <span className="font-bold text-brand">{results.length}</span> result{results.length === 1 ? "" : "s"} for{" "}
-            <span className="font-semibold text-zinc-200">“{state?.query}”</span>
-            {state && state.total > results.length ? " (more available)" : ""}
+          <p className="hairline-b mono-meta mb-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 pb-3 text-[12px] uppercase tracking-[0.14em] text-zinc-500">
+            <span className="font-bold text-brand">
+              {results.length} {results.length === 1 ? "Result" : "Results"}
+            </span>
+            <span className="text-zinc-400">for “{state?.query}”</span>
+            {state && state.total > results.length && (
+              <span className="text-zinc-600">+ more available</span>
+            )}
           </p>
-          <div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7">
+          <div className="grid grid-cols-3 gap-3.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7">
             {results.map((item) => {
               const key = `${item.id.provider}:${item.id.value}`;
               if (seenKeys.current.has(key)) return null;
@@ -236,12 +266,12 @@ export default function SearchPage() {
               <button
                 onClick={() => state && void runSearch(state.query, provider, state.page + 1, true)}
                 disabled={loadingMore}
-                className="flex items-center gap-2 rounded-xl border border-white/15 px-6 py-3 text-sm font-semibold text-white transition duration-200 hover:border-brand/50 hover:text-brand disabled:opacity-50"
+                className="btn-glass mono-meta px-6 py-2.5 text-[12px] font-semibold uppercase tracking-[0.14em] disabled:opacity-50"
               >
                 {loadingMore ? (
-                  <Spinner width={16} height={16} className="animate-spin" />
+                  <Spinner width={15} height={15} className="animate-spin" />
                 ) : (
-                  <ChevronRight width={16} height={16} className="rotate-90" />
+                  <ChevronRight width={15} height={15} className="rotate-90" />
                 )}
                 Load more
               </button>
@@ -252,18 +282,28 @@ export default function SearchPage() {
 
       {!searching && !error && state && results.length === 0 && (
         <div className="mt-20 text-center">
-          <p className="text-4xl">🎬</p>
-          <p className="mt-4 text-lg font-semibold text-zinc-200">No matches on {PROVIDERS.find((p) => p.id === provider)?.label}</p>
-          <p className="mt-1 text-sm text-zinc-500">Try a different title or switch sources above.</p>
+          <p className="mono-meta text-[11px] font-bold tracking-[0.3em] text-brand">// NO MATCH</p>
+          <p className="mt-4 font-mono text-sm text-zinc-400">
+            ZERO RESULTS FOR “{state.query.toUpperCase()}” ON{" "}
+            <span className="text-brand">{(PROVIDERS.find((p) => p.id === provider)?.label ?? provider).toUpperCase()}</span>
+          </p>
+          <p className="mt-2 font-mono text-xs text-zinc-600">
+            TRY A DIFFERENT TITLE OR SWITCH SOURCES ABOVE.
+          </p>
         </div>
       )}
 
       {!searching && !state && !error && (
         <div className="mt-24 text-center">
-          <p className="mx-auto max-w-md text-sm leading-relaxed text-zinc-500">
-            Start typing to search movies and series across your MovieBox backend. Press{" "}
-            <kbd className="rounded border border-white/20 bg-surface px-1.5 py-0.5 text-xs text-zinc-300">Enter</kbd>{" "}
-            to search or pick a suggestion.
+          <p className="mono-meta text-[11px] font-bold tracking-[0.3em] text-zinc-600">
+            // AWAITING QUERY
+          </p>
+          <p className="mx-auto mt-4 max-w-md font-mono text-[13px] leading-relaxed text-zinc-500">
+            Type to search movies and series across your MovieBox backend, then press{" "}
+            <kbd className="rounded-[4px] border border-line bg-surface px-1.5 py-0.5 text-[11px] text-zinc-300">
+              ENTER
+            </kbd>{" "}
+            or pick a suggestion.
           </p>
         </div>
       )}

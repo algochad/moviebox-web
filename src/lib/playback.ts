@@ -176,10 +176,42 @@ export function pickPlayableManifest(
 }
 
 /**
+ * Convert an ISO-8601 duration (`PT#H#M#S`, any component optional, seconds
+ * may carry fractions, e.g. `PT2H28M7.9S`, `PT45M`, `PT1M2S`) into seconds.
+ * Returns null when the value is absent or does not parse.
+ */
+export function isoDurationToSeconds(raw: string): number | null {
+  const m = raw.trim().match(
+    /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/i,
+  );
+  if (!m) return null;
+  // "PT" with no component is not a real duration.
+  if (m[1] == null && m[2] == null && m[3] == null) return null;
+  const h = Number(m[1] ?? 0);
+  const min = Number(m[2] ?? 0);
+  const s = Number(m[3] ?? 0);
+  const total = h * 3600 + min * 60 + s;
+  return Number.isFinite(total) ? total : null;
+}
+
+/**
+ * Parse the MPD `mediaPresentationDuration` attribute out of a DASH manifest
+ * and return it in seconds (e.g. `PT2H28M7.9S` -> 8887.9). The MPD carries the
+ * *true total* runtime of the source, which the transcode HLS live window does
+ * not expose through `video.duration`. Returns null when the attribute is
+ * absent or unparseable.
+ */
+export function parseMpdDuration(text: string): number | null {
+  const attr = text.match(/mediaPresentationDuration\s*=\s*["']([^"']+)["']/i);
+  if (!attr) return null;
+  return isoDurationToSeconds(attr[1]);
+}
+
+/**
  * Rewrite relative segment references inside a manifest so it can be played
  * from a Blob URL. `baseDir` is the absolute directory of the original source
  * (e.g. `https://host/api/proxy/{ticket}/a/dash/xxx/`); every relative
- * SegmentTemplate `init-stream$…`/`chunk-stream$…` reference and every
+ * SegmentTemplate `init-stream$…/chunk-stream$…` reference and every
  * relative `<BaseURL>` is prefixed with it. Absolute URLs and already-rewritten
  * references are left alone.
  */

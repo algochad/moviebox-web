@@ -19,7 +19,8 @@ npm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# rust backend fork is versioned in its own repository
-MovieBox-Tui/
+# rust build artifacts (source is vendored into this repo under MovieBox-Tui/)
+MovieBox-Tui/**/target/
+MovieBox-Tui/**/book/
 
 .DS_Store

@@ -1,0 +1,81 @@
+name: Build and Upload Android Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to attach the Android binary to"
+        required: true
+        default: "v0.1.18"
+      git_ref:
+        description: "Git ref (branch, tag, or commit SHA) to build from"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Build and Upload Android arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.git_ref || github.event.inputs.release_tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "android-arm64-backfill"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Configure Android Toolchain & Build
+        run: |
+          TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$TOOLCHAIN" >> $GITHUB_PATH
+          export PATH="$TOOLCHAIN:$PATH"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          
+          cargo build --release --all-features --locked --target aarch64-linux-android
+
+      - name: Validate Android ELF headers
+        run: |
+          BIN="target/aarch64-linux-android/release/moviebox-tui"
+          readelf -lW "$BIN" | grep -F "PHDR" || { echo "::error::Missing PT_PHDR"; exit 1; }
+          readelf -lW "$BIN" | grep -F "/system/bin/linker64" || { echo "::error::Missing Android PT_INTERP"; exit 1; }
+
+      - name: Package Archive
+        run: |
+          mkdir dist
+          cp target/aarch64-linux-android/release/moviebox-tui dist/
+          cp README.md dist/
+          cp LICENSE-* dist/ || true
+          tar -czvf MovieBox_Android_arm64.tar.gz -C dist .
+
+      - name: Update SHA256SUMS and Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          gh release download "$TAG" -p "SHA256SUMS" || touch SHA256SUMS
+          sed -i '/MovieBox_Android_arm64.tar.gz/d' SHA256SUMS
+          sha256sum MovieBox_Android_arm64.tar.gz >> SHA256SUMS
+
+          gh release upload "$TAG" MovieBox_Android_arm64.tar.gz --clobber
+          gh release upload "$TAG" SHA256SUMS --clobber
+          echo "✔ Successfully attached MovieBox_Android_arm64.tar.gz to $TAG"

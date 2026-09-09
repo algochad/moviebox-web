@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { useState } from "react";
 import type { CatalogItem, MediaType } from "@/lib/types";
+import { PlayIcon } from "@/components/icons";
 
 export function qualityLabel(item: CatalogItem): string | null {
   if (item.media_type === "series") {
@@ -28,14 +29,20 @@ export function Cover({
 }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) {
+    const letter = alt.trim().charAt(0).toUpperCase() || "?";
     return (
       <div
-        className={`grid place-items-center bg-gradient-to-br from-surface-2 via-surface to-ink ${className}`}
+        className={`grid place-items-center overflow-hidden bg-gradient-to-br from-surface-2 via-surface to-ink ${className}`}
         aria-label={alt}
+        role="img"
       >
-        <span className="select-none text-2xl font-black tracking-tight text-brand/60 drop-shadow-[0_0_14px_rgba(34,197,94,0.15)]">
-          {alt.trim().charAt(0).toUpperCase() || "?"}
-        </span>
+        <div className="flex flex-col items-center gap-2 px-2">
+          <PlayIcon width={22} height={22} className="text-zinc-700" />
+          <span className="w-full truncate text-center font-mono text-[9px] font-semibold uppercase tracking-[0.22em] text-zinc-600">
+            {letter}
+            {" · poster offline"}
+          </span>
+        </div>
       </div>
     );
   }

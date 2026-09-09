@@ -9,7 +9,6 @@ import {
   ProviderId,
   SearchResponse,
   StreamsResponse,
-  SubtitleOption,
   TranscodeStartResponse,
 } from "@/lib/types";
 
@@ -67,6 +66,17 @@ export const api = {
   /** Status of an in-flight transcode session. */
   transcodeState: (session: string) =>
     request<TranscodeStateResponse>(`/transcode/${encodeURIComponent(session)}/state`),
+  /**
+   * Restart the transcode pipeline at an absolute source offset. The session
+   * id is kept; the child is killed, old segments/playlist are wiped and a
+   * fresh playlist begins at the seek point. 409 while a restart is already
+   * in flight, 422 when the offset is at/beyond the source duration.
+   */
+  transcodeSeek: (session: string, positionSeconds: number) =>
+    request<TranscodeSeekResponse>(`/transcode/${encodeURIComponent(session)}/seek`, {
+      method: "POST",
+      body: JSON.stringify({ position_seconds: positionSeconds }),
+    }),
   /** Stop and remove a transcode session (fire-and-forget friendly). */
   transcodeDelete: (session: string) =>
     request<{ removed: boolean }>(`/transcode/${encodeURIComponent(session)}`, {
@@ -81,6 +91,22 @@ export interface TranscodeStateResponse {
   ready: boolean;
   segments: number;
   ticket: string;
+  /** True while a seek-restart is wiping/rebuilding the pipeline. */
+  restarting: boolean;
+  /** Total runtime of the source in seconds (from the MPD), null when unavailable. */
+  duration_seconds: number | null;
+  /** Seconds of media transcoded so far (EXTINF sum of the live playlist). */
+  produced_seconds: number;
+}
+
+/** Response of POST /transcode/{session}/seek. */
+export interface TranscodeSeekResponse {
+  session: string;
+  m3u8_url: string;
+  duration_seconds: number | null;
+  /** Content-absolute position the new pipeline starts at (the seek offset). */
+  produced_seconds: number;
+  restarting: false;
 }
 
 /**
@@ -90,15 +116,4 @@ export interface TranscodeStateResponse {
  */
 export function mbUrl(backendPath: string): string {
   return backendPath.startsWith("/api/") ? `/api/mb${backendPath.slice("/api".length)}` : backendPath;
-}
-
-/** Pick captions for a title; prefers English, falls back to the first option. */
-export function preferredSubtitle(subtitles: SubtitleOption[]): SubtitleOption | null {
-  if (!subtitles.length) return null;
-  const clean = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
-  return (
-    subtitles.find((s) => clean(s.name).includes("english") && !clean(s.name).includes("spanish")) ??
-    subtitles.find((s) => clean(s.name) === "english") ??
-    subtitles[0]
-  );
 }

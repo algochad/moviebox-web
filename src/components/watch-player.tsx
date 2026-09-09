@@ -9,14 +9,20 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, mbUrl, preferredSubtitle } from "@/lib/api";
-import { attachSubtitleTrack, parseSubtitleCues } from "@/lib/captions";
+import { api, mbUrl, type TranscodeStateResponse } from "@/lib/api";
+import {
+  attachSubtitleTrack,
+  ensureActiveCues,
+  parseSubtitleCues,
+  reattachSubtitleTrack,
+  type SubtitleTrackState,
+} from "@/lib/captions";
 import { formatClock } from "@/lib/format";
 import { clearProgress, entryKey, getHistory, saveProgress } from "@/lib/history";
-import { pickPlayableManifest, rewriteRelativeTo } from "@/lib/playback";
-import type { MediaDetails, Release, StreamsResponse } from "@/lib/types";
+import { parseMpdDuration, pickPlayableManifest, rewriteRelativeTo } from "@/lib/playback";
+import type { MediaDetails, Release, StreamsResponse, SubtitleOption } from "@/lib/types";
 import { ApiError } from "@/lib/types";
-import { ArrowLeft, FullscreenIcon, FullscreenExitIcon, PlayIcon, Spinner, VolumeIcon, VolumeMuteIcon } from "@/components/icons";
+import { ArrowLeft, CheckIcon, FullscreenIcon, FullscreenExitIcon, PlayIcon, Spinner, VolumeIcon, VolumeMuteIcon } from "@/components/icons";
 
 type Provider = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix";
 
@@ -32,6 +38,12 @@ interface Loaded {
   details: MediaDetails;
 }
 
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
 export function WatchPlayer({ provider, id, season, episode }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,6 +54,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const hlsRef = useRef<Hls | null>(null);
   const blobUrlRef = useRef<string | null>(null);
   const transcodeSessionRef = useRef<string | null>(null);
+  // the index URL of the stream currently bound to hls.js (needed to restore
+  // playback when a remote seek is refused)
+  const transcodeIndexUrlRef = useRef<string | null>(null);
+  // bumped whenever the whole source is (re)started — in-flight async work
+  // (e.g. a seek restart) checks it before touching playback state
+  const sourceEpochRef = useRef(0);
   const watchdogFiredRef = useRef(false);
   const playingSinceRef = useRef(0);
   const playingRef = useRef(false);
@@ -51,6 +69,17 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const [transcodeActive, setTranscodeActiveState] = useState(false);
   // source the player is currently bound to (for the watchdog fallback)
   const currentSourceRef = useRef<string | null>(null);
+
+  // Absolute-source timeline for the transcode (HLS live) path. The media
+  // element only exposes the sliding live window (video.duration = window
+  // length, currentTime = window-relative), so the true total comes from the
+  // MPD / backend state and the window's start position is derived as
+  // `totalDuration - windowLength` (recomputed every rAF frame).
+  const totalDurationRef = useRef<number | null>(null);
+  const manifestTotalRef = useRef<number | null>(null);
+  const producedSecondsRef = useRef(0);
+  const playbackOffsetRef = useRef(0);
+  const resumePromptedRef = useRef(false);
 
   // imperative DOM refs for the 60fps timeline
   const seekRef = useRef<HTMLInputElement>(null);
@@ -70,15 +99,29 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   const [resumeAsk, setResumeAsk] = useState<{ position: number } | null>(null);
   const [nextUp, setNextUp] = useState<{ season: number; episode: number; title: string } | null>(null);
-  const [subLabel, setSubLabel] = useState<string | null>(null);
   const [qualityChoices, setQualityChoices] = useState<{ label: string; release: Release }[]>([]);
   const [tick, setTick] = useState(0);
+  // captions: available subtitle tracks (moviebox only) + the active pick
+  const [subOptions, setSubOptions] = useState<SubtitleOption[]>([]);
+  const [chosenSub, setChosenSub] = useState<SubtitleOption | null>(null);
+  const [subsOpen, setSubsOpen] = useState(false);
+  // remote (pipeline-restart) seek state
+  const [remoteSeeking, setRemoteSeeking] = useState(false);
+  const [seekNotice, setSeekNotice] = useState<string | null>(null);
+  const subsMenuRef = useRef<HTMLDivElement>(null);
 
   const controlsTimer = useRef<number | null>(null);
   const volumeRef = useRef(volume);
   const nextRef = useRef(nextUp);
   const endedRef = useRef(false);
-  const subTrackCleanup = useRef<(() => void) | null>(null);
+  // true while the user is dragging the seek bar (rAF must not fight the thumb)
+  const draggingRef = useRef(false);
+  const keyRef = useRef<string>("");
+  const subTrackRef = useRef<SubtitleTrackState | null>(null);
+  const chosenSubRef = useRef<SubtitleOption | null>(null);
+  const remoteSeekBusyRef = useRef(false);
+  // media-session seekto + resume route through the absolute seek dispatcher
+  const seekAbsoluteRef = useRef<(absSeconds: number) => void>(() => undefined);
 
   const setTranscodeActive = useCallback((active: boolean) => {
     transcodeActiveRef.current = active;
@@ -89,10 +132,35 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     ? `${loaded.details.title}${loaded.details.media_type === "series" && season > 0 ? ` · S${season} E${episode}` : ""}`
     : "Loading…";
   const key = entryKey(provider, id, season, episode);
+  keyRef.current = key;
+
+  /** Absolute content position in seconds (transcode path maps the live window onto the true source timeline). */
+  const absolutePosition = useCallback((): number => {
+    const video = videoRef.current;
+    const current = video?.currentTime ?? 0;
+    if (!Number.isFinite(current)) return 0;
+    const total = transcodeActiveRef.current ? totalDurationRef.current ?? manifestTotalRef.current : null;
+    if (transcodeActiveRef.current && total != null) {
+      const abs = playbackOffsetRef.current + current;
+      return Math.min(Math.max(abs, 0), total);
+    }
+    return Math.max(current, 0);
+  }, []);
+
+  /** Duration of the whole title in seconds (total for transcode, media duration otherwise). */
+  const absoluteDuration = useCallback((): number => {
+    const total = transcodeActiveRef.current ? totalDurationRef.current ?? manifestTotalRef.current : null;
+    if (total != null && Number.isFinite(total) && total > 0) return total;
+    const video = videoRef.current;
+    const d = video?.duration ?? 0;
+    return Number.isFinite(d) && d > 0 ? d : 0;
+  }, []);
 
   const saveNow = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !video.duration || endedRef.current) return;
+    if (!video || endedRef.current) return;
+    const dur = absoluteDuration();
+    if (dur <= 0) return;
     saveProgress(key, {
       provider,
       id,
@@ -102,10 +170,10 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       year: loaded?.details.year ?? null,
       season,
       episode,
-      position: video.currentTime,
-      duration: video.duration,
+      position: absolutePosition(),
+      duration: dur,
     });
-  }, [key, provider, id, season, episode, loaded, label]);
+  }, [key, provider, id, season, episode, loaded, label, absolutePosition, absoluteDuration]);
 
   // ---------------- media session (OS media keys + lock screen) ----------------
   const setupMediaSession = useCallback(() => {
@@ -121,7 +189,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       ms.setActionHandler("play", () => void video.play());
       ms.setActionHandler("pause", () => video.pause());
       ms.setActionHandler("seekto", (d) => {
-        if (d.seekTime != null) video.currentTime = d.seekTime;
+        if (d.seekTime != null) seekAbsoluteRef.current(d.seekTime);
       });
     } catch {
       /* unsupported */
@@ -130,8 +198,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
 
   // ---------------- source loading ----------------
   const teardown = useCallback(() => {
-    subTrackCleanup.current?.();
-    subTrackCleanup.current = null;
+    // NB: the caption track is deliberately NOT torn down here — it is owned
+    // by the user's subtitle selection and survives source switches (the same
+    // video element keeps addTextTrack tracks across load()/src changes).
+    // Invalidate any in-flight async work (e.g. a seek-restart poll) that
+    // captured the previous source epoch.
+    sourceEpochRef.current += 1;
     // stop the live transcode: poll, hls playback, session on the backend
     const hls = hlsRef.current;
     if (hls) {
@@ -168,43 +240,98 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       video.load();
     }
     currentSourceRef.current = null;
+    transcodeIndexUrlRef.current = null;
+    remoteSeekBusyRef.current = false;
+    setRemoteSeeking(false);
+    // reset the absolute-timeline model; a new source run re-derives it
+    totalDurationRef.current = null;
+    manifestTotalRef.current = null;
+    producedSecondsRef.current = 0;
+    playbackOffsetRef.current = 0;
+    setSeekNotice(null);
   }, [setTranscodeActive]);
 
-  const applyCaptions = useCallback(
-    async (resourceId: string | null) => {
+  // ---------------- captions ----------------
+  /** Load the available subtitle options once per title (moviebox only). */
+  const loadSubtitleOptions = useCallback(async () => {
+    if (provider !== "moviebox") {
+      setSubOptions([]);
+      return;
+    }
+    try {
+      const subs = await api.captions(id);
+      setSubOptions(subs.subtitles);
+    } catch {
+      setSubOptions([]); // captions are optional
+    }
+  }, [provider, id]);
+
+  /** Fetch + parse one subtitle file through the header-injecting proxy. */
+  const fetchSubtitleText = useCallback(async (opt: SubtitleOption): Promise<string | null> => {
+    let res: Response;
+    try {
+      res = await fetch(`/api/mb/proxy/ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: opt.url, headers: [] }),
+        cache: "no-store",
+      });
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      return null;
+    }
+    if (typeof body !== "object" || body === null || !("ticket" in body)) return null;
+    const ticket = body.ticket;
+    if (typeof ticket !== "string" || !ticket) return null;
+    try {
+      const subRes = await fetch(`/api/proxy/${ticket}/`, { cache: "no-store" });
+      if (!subRes.ok) return null;
+      return await subRes.text();
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /** Cheap re-apply after source (re)starts — only when captions are on. */
+  const reapplyCaptions = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !chosenSubRef.current) return;
+    reattachSubtitleTrack(video, subTrackRef.current);
+    ensureActiveCues(video, subTrackRef.current);
+  }, []);
+
+  /** (Re)attach a chosen option, or clear the track when opt is null ("Off"). */
+  const applyChosenCaptions = useCallback(
+    async (opt: SubtitleOption | null) => {
       const video = videoRef.current;
-      if (!video || provider !== "moviebox") return;
-      let subs;
-      try {
-        subs = await api.captions(id);
-      } catch {
-        return; // captions are optional
-      }
-      const pick = preferredSubtitle(subs.subtitles);
-      if (!pick) return;
-      let text: string;
-      try {
-        const res = await fetch(`/api/mb/proxy/ticket`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: pick.url, headers: [] }),
-          cache: "no-store",
-        });
-        if (!res.ok) return;
-        const { ticket } = (await res.json()) as { ticket: string };
-        const subRes = await fetch(`/api/proxy/${ticket}/`, { cache: "no-store" });
-        if (!subRes.ok) return;
-        text = await subRes.text();
-      } catch {
-        return;
-      }
+      subTrackRef.current?.cleanup();
+      subTrackRef.current = null;
+      if (!opt || !video) return;
+      const text = await fetchSubtitleText(opt);
+      if (text == null) return;
       const cues = parseSubtitleCues(text);
       if (!cues.length) return;
-      subTrackCleanup.current?.();
-      subTrackCleanup.current = attachSubtitleTrack(video, pick.name, cues);
-      setSubLabel(pick.name);
+      if (chosenSubRef.current !== opt) return; // user switched during fetch
+      subTrackRef.current = attachSubtitleTrack(video, opt.name, cues);
     },
-    [id, provider],
+    [fetchSubtitleText],
+  );
+
+  /** User picked an option (or Off) in the CC panel. */
+  const chooseSubtitle = useCallback(
+    (opt: SubtitleOption | null) => {
+      chosenSubRef.current = opt;
+      setChosenSub(opt);
+      setSubsOpen(false);
+      void applyChosenCaptions(opt);
+    },
+    [applyChosenCaptions],
   );
 
   // ---------------- HEVC fallback: live server-side transcode ----------------
@@ -227,28 +354,72 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     }
   }, []);
 
+  /** Fold a fresh /state response into the absolute-timeline refs. */
+  const applyTranscodeState = useCallback((s: TranscodeStateResponse) => {
+    if (typeof s.duration_seconds === "number" && s.duration_seconds > 0) {
+      totalDurationRef.current = s.duration_seconds;
+    }
+    if (typeof s.produced_seconds === "number") {
+      producedSecondsRef.current = s.produced_seconds;
+    }
+    // NOTE: playbackOffsetRef is deliberately NOT derived from produced
+    // here. The HLS pipeline appends segments with timestamps starting at
+    // its base (0, or the seek offset after a restart), so video.currentTime
+    // is already content-absolute; the offset is the pipeline base and stays
+    // constant until the next seek-restart. Deriving it from (produced -
+    // element duration) oscillates by a window-length quantum every playlist
+    // refresh — that jitter is what this avoids.
+  }, []);
+
   /** Poll the transcode session until the first segment exists (~20s cap). */
   const waitForTranscode = useCallback(
     async (session: string, indexUrl: string): Promise<void> => {
       const deadline = Date.now() + 20_000;
       while (Date.now() < deadline) {
         const state = await api.transcodeState(session);
-        if (state.ready && state.segments >= 1) return;
+        applyTranscodeState(state);
+        if (!state.restarting && state.ready && state.segments >= 1) return;
         if (await indexHasSegments(indexUrl)) return;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await delay(1500);
       }
       throw new Error("Live transcoding is taking longer than expected — try again.");
     },
-    [indexHasSegments],
+    [indexHasSegments, applyTranscodeState],
   );
+
+  /**
+   * Destroy only the in-flight hls.js engine (used by the seek-restart path,
+   * where the transcode session itself must keep living).
+   */
+  const destroyHlsOnly = useCallback(() => {
+    const hls = hlsRef.current;
+    hlsRef.current = null;
+    if (hls) {
+      try {
+        hls.destroy();
+      } catch {
+        /* already torn down */
+      }
+    }
+  }, []);
 
   const playHls = useCallback(
     (indexUrl: string) => {
       const video = videoRef.current;
       if (!video) return;
-      const startPlayback = () => void video.play().catch(() => undefined);
+      transcodeIndexUrlRef.current = indexUrl;
+      const startPlayback = () => {
+        // Chrome drops TextTrack cue matching across source (re)starts;
+        // re-apply captions (cheap — no-op unless a track is chosen).
+        reapplyCaptions();
+        window.setTimeout(() => {
+          reapplyCaptions();
+          ensureActiveCues(video, subTrackRef.current);
+        }, 150);
+        void video.play().catch(() => undefined);
+      };
       if (Hls.isSupported()) {
-        const hls = new Hls({ maxBufferLength: 40, backBufferLength: 60 });
+        const hls = new Hls({ maxBufferLength: 40, backBufferLength: Infinity });
         hlsRef.current = hls;
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
@@ -257,16 +428,25 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           setState("error");
         });
         hls.on(Hls.Events.MANIFEST_PARSED, startPlayback);
+        hls.on(Hls.Events.LEVEL_UPDATED, () => {
+          // the live playlist grew/slid — keep the caption matcher honest
+          ensureActiveCues(video, subTrackRef.current);
+        });
         hls.loadSource(indexUrl);
         hls.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         // native HLS (Safari without MSE)
+        const onMeta = () => {
+          reapplyCaptions();
+          video.removeEventListener("loadedmetadata", onMeta);
+        };
+        video.addEventListener("loadedmetadata", onMeta);
         video.src = indexUrl;
         video.load();
         startPlayback();
       }
     },
-    [teardown],
+    [teardown, reapplyCaptions],
   );
 
   /** Start transcoding an HEVC-only source, then play the resulting HLS stream. */
@@ -281,6 +461,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       setError(null);
       setState("loading");
       setTranscodeActive(true);
+      playbackOffsetRef.current = 0; // fresh pipeline: window starts at 0
       try {
         const started = await api.transcodeStart(ticket);
         transcodeSessionRef.current = started.session;
@@ -288,11 +469,13 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         await waitForTranscode(started.session, indexUrl);
         // torn down or switched to another source while waiting?
         if (!transcodeActiveRef.current || transcodeSessionRef.current !== started.session) return;
+        transcodeIndexUrlRef.current = indexUrl;
         playHls(indexUrl);
       } catch (e) {
         setTranscodeActive(false);
         const session = transcodeSessionRef.current;
         transcodeSessionRef.current = null;
+        transcodeIndexUrlRef.current = null;
         if (session) void api.transcodeDelete(session).catch(() => undefined);
         if (e instanceof ApiError && e.status === 503) {
           setError(
@@ -309,6 +492,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
 
   const startSource = useCallback(
     async (wantResolution: number | null, candidateOrder: Release[]) => {
+      resumePromptedRef.current = false;
       teardown();
       setState("loading");
       setError(null);
@@ -386,7 +570,10 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           const decision = pickPlayableManifest(manifestText, video);
           if (decision.mode === "transcode") {
             hevcOnlyRef.current = true;
-            void applyCaptions(rel.resource_id ?? null);
+            // Remember the true source runtime from the MPD — the transcode
+            // HLS window never exposes it through video.duration.
+            const mpdTotal = parseMpdDuration(manifestText);
+            if (mpdTotal != null) manifestTotalRef.current = mpdTotal;
             await startTranscode(source);
             return;
           }
@@ -432,16 +619,17 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         void video.play().catch(() => undefined);
       }
 
-      void applyCaptions(rel.resource_id ?? null);
+      reapplyCaptions();
       setState("ready");
     },
-    [provider, id, season, episode, teardown, applyCaptions, startTranscode],
+    [provider, id, season, episode, teardown, reapplyCaptions, startTranscode],
   );
 
   // ---------------- initial load ----------------
   const boot = useCallback(async () => {
     setState("loading");
     setError(null);
+    void loadSubtitleOptions();
     try {
       const [streams, details] = await Promise.all([
         api.streams(provider, id, season, episode),
@@ -469,7 +657,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       setError(e instanceof Error ? e.message : "Failed to load playback sources");
       setState("error");
     }
-  }, [provider, id, season, episode, startSource]);
+  }, [provider, id, season, episode, startSource, loadSubtitleOptions]);
 
   useEffect(() => {
     void boot();
@@ -494,9 +682,19 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
 
   // ---------------- resume prompt ----------------
   useEffect(() => {
+    if (resumePromptedRef.current) return;
     if (state !== "ready" && state !== "playing" && state !== "paused") return;
     const entry = getHistory().find((h) => entryKey(h.provider, h.id, h.season, h.episode) === key);
-    if (entry && entry.position > 25 && entry.duration > 0 && entry.position / entry.duration < 0.98) {
+    // Only offer to resume progress that predates this session: entries this
+    // run keeps saving every ~10s and must never re-prompt mid-watch.
+    if (
+      entry &&
+      entry.updated < Date.now() - 120_000 &&
+      entry.position > 25 &&
+      entry.duration > 0 &&
+      entry.position / entry.duration < 0.98
+    ) {
+      resumePromptedRef.current = true;
       setResumeAsk({ position: entry.position });
     }
   }, [state, key]);
@@ -505,13 +703,19 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     const video = videoRef.current;
     const pos = resumeAsk?.position ?? 0;
     setResumeAsk(null);
-    if (video && !fromStart && pos > 0) {
-      const trySeek = () => {
-        video.currentTime = pos;
-        video.removeEventListener("loadedmetadata", trySeek);
-      };
-      video.addEventListener("loadedmetadata", trySeek);
-      if (video.readyState >= 1) trySeek();
+    if (!video) return;
+    if (!fromStart && pos > 0) {
+      if (transcodeActiveRef.current) {
+        // absolute source position → dispatch through the shared seek path
+        seekAbsoluteRef.current(pos);
+      } else {
+        const trySeek = () => {
+          video.currentTime = pos;
+          video.removeEventListener("loadedmetadata", trySeek);
+        };
+        video.addEventListener("loadedmetadata", trySeek);
+        if (video.readyState >= 1) trySeek();
+      }
     }
     void video?.play().catch(() => undefined);
   };
@@ -544,9 +748,17 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const seekBy = useCallback((delta: number) => {
     const video = videoRef.current;
     if (!video) return;
+    if (transcodeActiveRef.current) {
+      const total = totalDurationRef.current ?? manifestTotalRef.current;
+      if (total != null && Number.isFinite(total)) {
+        seekAbsoluteRef.current(Math.min(Math.max(absolutePosition() + delta, 0), total));
+        pokeControls();
+        return;
+      }
+    }
     video.currentTime = Math.min(Math.max(0, video.currentTime + delta), video.duration || 0);
     pokeControls();
-  }, [pokeControls]);
+  }, [pokeControls, absolutePosition]);
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
@@ -575,6 +787,134 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     setMuted(v === 0);
     volumeRef.current = v;
   };
+
+  // ---------------- absolute seeking (transcode path) ----------------
+  /** Transient center-of-screen notice that auto-clears. */
+  const flashNotice = useCallback((text: string) => {
+    setSeekNotice(text);
+    window.setTimeout(() => {
+      setSeekNotice((cur) => (cur === text ? null : cur));
+    }, 2000);
+  }, []);
+
+  /**
+   * Restart the transcode pipeline at an absolute source offset and resume on
+   * the fresh playlist. The HLS engine is only torn down AFTER the backend
+   * accepted the seek, so a refused request (409/422/network) leaves the
+   * current stream playing untouched.
+   */
+  const remoteSeek = useCallback(
+    async (absSeconds: number) => {
+      const session = transcodeSessionRef.current;
+      if (!session) return;
+      if (remoteSeekBusyRef.current) return; // ignore seek storms
+      const total = totalDurationRef.current ?? manifestTotalRef.current;
+      if (total != null && absSeconds >= total - 0.05) {
+        flashNotice("End of video");
+        return;
+      }
+      remoteSeekBusyRef.current = true;
+      const epoch = sourceEpochRef.current;
+      setRemoteSeeking(true);
+      setControls(true);
+      pokeControls();
+      setSeekNotice(null);
+      try {
+        const started = await api.transcodeSeek(session, absSeconds);
+        if (sourceEpochRef.current !== epoch || !transcodeActiveRef.current) return;
+        if (typeof started.duration_seconds === "number" && started.duration_seconds > 0) {
+          totalDurationRef.current = started.duration_seconds;
+        }
+        if (typeof started.produced_seconds === "number" && started.produced_seconds > 0) {
+          producedSecondsRef.current = started.produced_seconds;
+        } else {
+          producedSecondsRef.current = absSeconds;
+        }
+        playbackOffsetRef.current = absSeconds; // new window begins at the seek point
+        // Backend is wiping the old pipeline now — detach hls.js before the
+        // old segments vanish, then wait out the restart.
+        destroyHlsOnly();
+        const indexUrl = mbUrl(started.m3u8_url);
+        transcodeIndexUrlRef.current = indexUrl;
+        setState("loading");
+        setError(null);
+        const deadline = Date.now() + 20_000;
+        let ready = false;
+        while (Date.now() < deadline && !ready) {
+          if (sourceEpochRef.current !== epoch || !transcodeActiveRef.current) return;
+          let state: TranscodeStateResponse;
+          try {
+            state = await api.transcodeState(session);
+            applyTranscodeState(state);
+            ready = !state.restarting && state.ready && state.segments >= 1;
+          } catch {
+            /* transient poll error — keep waiting */
+          }
+          if (!ready && (await indexHasSegments(indexUrl))) ready = true;
+          if (!ready) await delay(1200);
+        }
+        if (sourceEpochRef.current !== epoch || !transcodeActiveRef.current) return;
+        setRemoteSeeking(false);
+        playHls(indexUrl);
+        reapplyCaptions();
+      } catch (e) {
+        if (sourceEpochRef.current !== epoch) return;
+        // Request was refused or never arrived: keep the previous stream.
+        setRemoteSeeking(false);
+        if (e instanceof ApiError && e.status === 422) {
+          flashNotice("Past end of video");
+        } else if (e instanceof ApiError && e.status === 409) {
+          flashNotice("Seek already in progress");
+        } else {
+          flashNotice("Seek failed — stream unchanged");
+        }
+      } finally {
+        if (sourceEpochRef.current === epoch) remoteSeekBusyRef.current = false;
+      }
+    },
+    [flashNotice, pokeControls, destroyHlsOnly, applyTranscodeState, indexHasSegments, playHls, reapplyCaptions],
+  );
+
+  /**
+   * Seek to an absolute source position. Media-seeks when the target already
+   * sits inside the buffered live window; otherwise dispatches a remote
+   * pipeline restart at that offset.
+   */
+  const seekAbsolute = useCallback(
+    async (absSeconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (!transcodeActiveRef.current) {
+        const target = Math.min(Math.max(absSeconds, 0), video.duration || 0);
+        video.currentTime = Number.isFinite(target) ? target : 0;
+        return;
+      }
+      if (remoteSeekBusyRef.current) return; // a restart is in flight
+      const total = totalDurationRef.current ?? manifestTotalRef.current;
+      if (total == null) return;
+      const abs = Math.min(Math.max(absSeconds, 0), total);
+      const offset = playbackOffsetRef.current;
+      let bufferedEnd = video.currentTime;
+      if (video.buffered.length > 0) bufferedEnd = video.buffered.end(video.buffered.length - 1);
+      const availableUntil = offset + bufferedEnd + 1.5;
+      const windowStart = Math.max(offset, 0);
+      if (abs <= availableUntil && abs >= windowStart - 1.5) {
+        // within the retained live window → plain window-relative media seek
+        const mediaTime = Math.min(Math.max(abs - offset, 0), video.duration || 0);
+        video.currentTime = mediaTime;
+        pokeControls();
+        return;
+      }
+      await remoteSeek(abs);
+    },
+    [pokeControls, remoteSeek],
+  );
+
+  // keep the media-session / keyboard / resume handlers pointing at the
+  // latest dispatcher without re-subscribing them on every render
+  useEffect(() => {
+    seekAbsoluteRef.current = seekAbsolute;
+  });
 
   // ---------------- next episode -----------------
   const maybeNextEpisode = useCallback((): { season: number; episode: number; title: string } | null => {
@@ -605,6 +945,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     setNextUp(n);
   }, []);
 
+  const maybeNextEpisodeRef = useRef(maybeNextEpisode);
+  maybeNextEpisodeRef.current = maybeNextEpisode;
+  const showNextUpRef = useRef(showNextUp);
+  showNextUpRef.current = showNextUp;
+
   useEffect(() => {
     if (!nextUp) return;
     nextCountdown.current = 10;
@@ -624,6 +969,16 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   }, [nextUp, router, provider, id, showNextUp]);
 
   // ---------------- keyboard ----------------
+  useEffect(() => {
+    if (!subsOpen) return;
+    const onDown = (ev: MouseEvent) => {
+      const el = subsMenuRef.current;
+      if (el && !el.contains(ev.target as Node)) setSubsOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [subsOpen]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -657,7 +1012,8 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           toggleFullscreen();
           break;
         case "Escape":
-          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+          if (subsOpen) setSubsOpen(false);
+          else if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
           else if (nextUp) showNextUp(null);
           else if (resumeAsk) setResumeAsk(null);
           else router.back();
@@ -667,36 +1023,77 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [togglePlay, seekBy, toggleMute, toggleFullscreen, nextUp, resumeAsk, router]);
+  }, [togglePlay, seekBy, toggleMute, toggleFullscreen, nextUp, resumeAsk, router, subsOpen]);
 
   // ---------------- progress tick ----------------
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const loop = () => {
-      if (!Number.isNaN(video.duration)) {
-        if (durationRef.current && Math.abs(Number(durationRef.current.dataset.d) - video.duration) > 0.5) {
-          durationRef.current.dataset.d = String(video.duration);
-          durationRef.current.textContent = formatClock(video.duration);
+      const transcode = transcodeActiveRef.current;
+      const total = transcode ? totalDurationRef.current ?? manifestTotalRef.current : null;
+      const rawDuration = video.duration;
+      const duration = transcode && total != null ? total : rawDuration;
+
+      if (Number.isFinite(duration) && duration > 0) {
+        // Transcode path: the element only exposes the sliding live window, so
+        // derive the absolute offset every frame and display the absolute
+        // source position against the true total.
+        let absTime = video.currentTime;
+        const offset = playbackOffsetRef.current;
+        if (transcode && total != null) {
+          // playbackOffsetRef is updated once per /state sample (see
+          // applyTranscodeState) and on seek-restart: the live window's start
+          // in content terms is constant between those events, so the frame
+          // loop only ever adds the continuous currentTime to it.
+          absTime = Math.min(offset + video.currentTime, total);
+          // A transcode that produced the whole title may never deliver an
+          // ENDLIST, so the browser never fires `ended` — close that gap once.
+          if (
+            !endedRef.current &&
+            !video.paused &&
+            producedSecondsRef.current >= total &&
+            absTime >= total - 1.5
+          ) {
+            endedRef.current = true;
+            clearProgress(keyRef.current);
+            const next = maybeNextEpisodeRef.current();
+            if (next) showNextUpRef.current({ ...next });
+            else {
+              setState("paused");
+              setControls(true);
+            }
+          }
         }
-        const pct = (video.currentTime / video.duration) * 100;
-        if (seekRef.current) {
-          seekRef.current.max = String(Math.floor(video.duration));
-          seekRef.current.value = String(Math.floor(video.currentTime));
-          seekRef.current.style.setProperty("--progress", `${pct}%`);
+
+        if (durationRef.current && Math.abs(Number(durationRef.current.dataset.d) - duration) > 0.5) {
+          durationRef.current.dataset.d = String(duration);
+          durationRef.current.textContent = formatClock(duration);
         }
-        if (timeRef.current) timeRef.current.textContent = formatClock(video.currentTime);
-        if (playedFillRef.current) playedFillRef.current.style.width = `${pct}%`;
-        // buffered range (first buffered segment)
-        if (bufferedFillRef.current && video.buffered.length > 0) {
-          const end = video.buffered.end(video.buffered.length - 1);
-          bufferedFillRef.current.style.width = `${(end / video.duration) * 100}%`;
+        if (!draggingRef.current) {
+          // (while the user drags the seek bar, the preview handlers own the
+          // thumb/fill/time label and the rAF loop must not fight them)
+          const pct = duration > 0 ? (absTime / duration) * 100 : 0;
+          if (timeRef.current) timeRef.current.textContent = formatClock(absTime);
+          if (playedFillRef.current) playedFillRef.current.style.width = `${pct}%`;
+          if (seekRef.current) {
+            seekRef.current.max = String(Math.floor(duration));
+            seekRef.current.value = String(Math.floor(absTime));
+            seekRef.current.style.setProperty("--progress", `${pct}%`);
+          }
+          // buffered range (last buffered segment, absolute on the transcode path)
+          if (bufferedFillRef.current && video.buffered.length > 0) {
+            const end = video.buffered.end(video.buffered.length - 1);
+            const bufAbs = transcode && total != null ? Math.min(offset + end, total) : end;
+            bufferedFillRef.current.style.width = `${duration > 0 ? (bufAbs / duration) * 100 : 0}%`;
+          }
         }
       }
       requestAnimationFrame(loop);
     };
     const raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------------- periodic progress persistence ----------------
@@ -707,6 +1104,25 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     }, 10_000);
     return () => window.clearInterval(id);
   }, [saveNow]);
+
+  // keep produced_seconds / duration_seconds fresh for the whole transcode run
+  // (natural-end detection and total-duration bookkeeping)
+  useEffect(() => {
+    if (!transcodeActive) return;
+    const poll = async () => {
+      const session = transcodeSessionRef.current;
+      if (!session) return;
+      try {
+        const st = await api.transcodeState(session);
+        applyTranscodeState(st);
+      } catch {
+        /* session deleted / server restarting — nothing to fold */
+      }
+    };
+    const t = window.setInterval(() => void poll(), 6_000);
+    void poll();
+    return () => window.clearInterval(t);
+  }, [transcodeActive, applyTranscodeState]);
 
   // ---------------- player events ----------------
   useEffect(() => {
@@ -728,8 +1144,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       saveNow();
     };
     const onEnded = () => {
-      endedRef.current = true;
       playingRef.current = false;
+      if (endedRef.current) return; // already handled by the transcode natural-end path
+      endedRef.current = true;
       clearProgress(key);
       const next = maybeNextEpisode();
       if (next) {
@@ -741,6 +1158,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     };
     const onError = () => {
       if (!video.error) return;
+      // during a seek-restart the old source is intentionally detached and the
+      // new one is being spun up — transient media errors are expected
+      if (remoteSeekBusyRef.current) return;
       const code = video.error.code;
       if (code === 4) {
         setError("This stream can't be played in your browser (unsupported codec or expired link).");
@@ -763,6 +1183,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     };
     const onPlaying = () => {
       setBuffering(false);
+      // captions: cheap re-apply once playback actually starts (a fresh source
+      // switch can leave the cue engine unmatching until then)
+      reapplyCaptions();
+      window.setTimeout(() => {
+        ensureActiveCues(video, subTrackRef.current);
+      }, 120);
     };
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
@@ -810,6 +1236,14 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     return () => window.clearInterval(timer);
   }, [teardown, startTranscode]);
 
+  /** Release of the seek bar: dispatch the chosen absolute position. */
+  const commitSeekFromRange = (target: HTMLInputElement) => {
+    draggingRef.current = false;
+    const value = Number(target.value);
+    if (!Number.isFinite(value)) return;
+    void seekAbsoluteRef.current(value);
+  };
+
   const showSpinner = state === "loading";
   return (
     <div
@@ -846,32 +1280,52 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         </button>
         <div className="min-w-0">
           <h1 className="truncate text-lg font-bold text-white md:text-xl">{label}</h1>
-          <p className="text-xs text-zinc-400">
-            {provider === "moviebox" ? "MovieBox" : provider}
-            {active ? ` · ${active.label.replace(/\.(mp4|mkv|mpd)$/i, "")}` : ""}
-            {subLabel ? ` · CC: ${subLabel}` : ""}
-            {transcodeActive ? " · live transcode" : ""}
+          <p className="flex items-center gap-2 text-xs text-zinc-400">
+            <span>{provider === "moviebox" ? "MovieBox" : provider}</span>
+            {active ? <span>· {active.label.replace(/\.(mp4|mkv|mpd)$/i, "")}</span> : null}
+            {transcodeActive && (
+              <span className="mono-meta rounded-[2px] border border-brand/40 bg-brand/10 px-1.5 py-px text-[9px] font-bold tracking-[0.2em] text-brand">
+                TRANSCODE
+              </span>
+            )}
+            {subOptions.length > 0 && (
+              <span className={`mono-meta text-[11px] ${chosenSub ? "text-brand" : "text-zinc-500"}`}>
+                {chosenSub ? `CC ${chosenSub.name}` : "CC OFF"}
+              </span>
+            )}
           </p>
         </div>
       </div>
 
       {/* live-transcode status pill (always visible while transcoding) */}
       {transcodeActive && (
-        <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15 backdrop-blur md:right-7 md:top-7">
-          <span className="h-2 w-2 rounded-full bg-brand" />
-          <span className="text-xs font-medium text-white/80">Live transcode</span>
+        <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2 border border-brand/50 bg-black/70 px-2.5 py-1.5 backdrop-blur md:right-7 md:top-7">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand shadow-[0_0_8px_var(--color-brand)]" />
+          <span className="mono-meta text-[10px] font-bold tracking-[0.25em] text-brand">TRANSCODE</span>
         </div>
       )}
 
       {/* center play / spinner */}
-      {showSpinner && (
+      {(showSpinner || remoteSeeking) && (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center">
-          <Spinner width={56} height={56} className="animate-spin text-white/80" />
+          <div className="flex flex-col items-center gap-4">
+            <Spinner width={56} height={56} className="animate-spin text-brand" />
+            {remoteSeeking && (
+              <span className="mono-meta text-xs font-bold tracking-[0.3em] text-brand">SEEKING…</span>
+            )}
+          </div>
         </div>
       )}
       {buffering && state === "playing" && (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center">
           <Spinner width={44} height={44} className="animate-spin text-white/70" />
+        </div>
+      )}
+      {seekNotice && (
+        <div className="pointer-events-none absolute inset-x-0 top-[34%] z-30 grid place-items-center">
+          <span className="mono-meta rounded-[2px] border border-brand/60 bg-black/85 px-3 py-1.5 text-xs font-semibold tracking-[0.15em] text-brand backdrop-blur">
+            {seekNotice}
+          </span>
         </div>
       )}
       {state === "paused" && !nextUp && !resumeAsk && (
@@ -982,13 +1436,27 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
               step={1}
               value={0}
               aria-label="Seek"
-              className="player-range absolute inset-0 h-full w-full opacity-0"
-              onPointerUp={(e) => {
-                const video = videoRef.current;
+              className="player-range absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              onPointerDown={(e) => {
+                draggingRef.current = true;
+                e.currentTarget.setPointerCapture?.(e.pointerId);
+                pokeControls();
+              }}
+              onPointerUp={(e) => commitSeekFromRange(e.currentTarget)}
+              onPointerCancel={() => {
+                draggingRef.current = false;
+              }}
+              onChange={(e) => {
                 const target = e.currentTarget;
-                if (!video) return;
-                const pct = Number(target.value) / Number(target.max || 1);
-                if (Number.isFinite(pct)) video.currentTime = pct * (video.duration || 0);
+                const max = Number(target.max || 0);
+                const v = Number(target.value);
+                if (max <= 0) return;
+                const pct = Math.min(100, Math.max(0, (v / max) * 100));
+                target.style.setProperty("--progress", `${pct}%`);
+                if (playedFillRef.current) playedFillRef.current.style.width = `${pct}%`;
+                if (timeRef.current) timeRef.current.textContent = formatClock(v);
+                // keyboard-driven changes never see a pointer grab: commit them
+                if (!draggingRef.current) commitSeekFromRange(target);
               }}
             />
           </div>
@@ -1013,6 +1481,59 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
               onChange={(e) => onVolume(Number(e.target.value))}
               className="w-20 accent-brand"
             />
+            {subOptions.length > 0 && (
+              <div ref={subsMenuRef} className="relative">
+                <button
+                  onClick={() => {
+                    setSubsOpen((open) => !open);
+                    pokeControls();
+                  }}
+                  aria-label="Subtitles"
+                  aria-expanded={subsOpen}
+                  className={`mono-meta h-8 border px-2 text-xs font-bold tracking-[0.2em] transition ${
+                    chosenSub
+                      ? "border-brand bg-brand/15 text-brand"
+                      : "border-white/25 bg-white/5 text-zinc-200 hover:bg-white/10"
+                  }`}
+                >
+                  CC
+                </button>
+                {subsOpen && (
+                  <div className="glass-panel absolute bottom-full right-0 z-30 mb-2 w-64">
+                    <p className="eyebrow px-3 pb-1.5 pt-2.5 text-brand">SUBTITLES</p>
+                    <ul className="max-h-72 overflow-y-auto pb-1">
+                      <li className="hairline-t">
+                        <button
+                          onClick={() => chooseSubtitle(null)}
+                          className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-white/10 ${
+                            !chosenSub ? "text-brand" : "text-zinc-300"
+                          }`}
+                        >
+                          <span className="mono-meta text-xs tracking-widest">OFF</span>
+                          {!chosenSub && <CheckIcon width={14} height={14} />}
+                        </button>
+                      </li>
+                      {subOptions.map((opt) => {
+                        const isActive = chosenSub?.url === opt.url;
+                        return (
+                          <li key={opt.url} className="hairline-t">
+                            <button
+                              onClick={() => chooseSubtitle(opt)}
+                              className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-white/10 ${
+                                isActive ? "text-brand" : "text-zinc-200"
+                              }`}
+                            >
+                              <span className="truncate text-xs">{opt.name}</span>
+                              {isActive && <CheckIcon width={14} height={14} />}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
             <span className="ml-1 text-sm tabular-nums text-zinc-300">
               <span ref={timeRef}>0:00</span>
               <span className="mx-1 text-zinc-600">/</span>
@@ -1022,9 +1543,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
             {qualityChoices.length > 1 && (
               <div className="ml-auto hidden items-center gap-1.5 sm:flex">
                 {transcodeActive && (
-                  <span className="flex items-center gap-1.5 rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white/80 ring-1 ring-white/15">
-                    <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-                    Transcode
+                  <span className="mono-meta flex items-center gap-1.5 rounded-[2px] border border-brand/40 bg-brand/10 px-2 py-1 text-[10px] font-bold tracking-[0.2em] text-brand">
+                    <span className="h-1 w-1 animate-pulse rounded-full bg-brand" />
+                    TRANSCODE
                   </span>
                 )}
                 {qualityChoices.map((c) => {

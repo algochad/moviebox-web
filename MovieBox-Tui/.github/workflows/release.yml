@@ -1,0 +1,389 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      is_new: ${{ steps.check.outputs.is_new }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Get version from Cargo.toml
+        id: check
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -1 | awk -F'"' '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if gh release view "v$VERSION" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "is_new=false" >> $GITHUB_OUTPUT
+            echo "Release v$VERSION already exists. Skipping build."
+          else
+            echo "is_new=true" >> $GITHUB_OUTPUT
+            echo "New version v$VERSION detected."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  preflight:
+    name: Release preflight
+    needs: check-version
+    if: needs.check-version.outputs.is_new == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "release-preflight"
+      - run: cargo package --locked
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [check-version, preflight]
+    if: needs.check-version.outputs.is_new == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "release-build-${{ matrix.target }}"
+
+      - name: Install cross
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build Linux binary
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C relocation-model=pic -C link-arg=-pie"
+        run: cross build --release --all-features --locked --target ${{ matrix.target }}
+      - name: Build macOS or Windows binary
+        if: matrix.os != 'ubuntu-latest'
+        run: cargo build --release --all-features --locked --target ${{ matrix.target }}
+
+      - name: Smoke-test produced Unix binary
+        if: matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        run: target/${{ matrix.target }}/release/moviebox-tui --version
+
+      - name: Align aarch64 ELF PT_TLS for Android Termux
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          python3 - << 'EOF'
+          import struct
+
+          path = "target/aarch64-unknown-linux-musl/release/moviebox-tui"
+          with open(path, "r+b") as f:
+              data = f.read()
+              fmt = "<HHIQQQIHHH"
+              e_type, e_machine, e_version, e_entry, e_phoff, e_shoff, e_flags, e_ehsize, e_phentsize, e_phnum = struct.unpack(
+                  fmt, data[16 : 16 + struct.calcsize(fmt)]
+              )
+              for i in range(e_phnum):
+                  off = e_phoff + i * e_phentsize
+                  ptype, pflags, poff, pvaddr, ppaddr, pfilesz, pmemsz, palign = struct.unpack(
+                      "<IIQQQQQQ", data[off : off + 56]
+                  )
+                  if ptype == 7 and palign < 64:
+                      f.seek(off + 48)
+                      f.write(struct.pack("<Q", 64))
+                      print(f"Patched PT_TLS p_align from {hex(palign)} to 0x40 (64 bytes)")
+          EOF
+
+      - name: Validate aarch64 ELF header for Android Termux (ET_DYN & TLS alignment)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          BIN="target/${{ matrix.target }}/release/moviebox-tui"
+          ETYPE=$(od -An -tx1 -j16 -N2 "$BIN" | tr -d ' \n')
+          echo "ELF e_type: $ETYPE"
+          if [ "$ETYPE" != "0300" ]; then
+            echo "::error::Expected ELF e_type 0300 (ET_DYN/PIE) for Android compatibility, got $ETYPE"
+            exit 1
+          fi
+
+          if readelf -lW "$BIN" | grep -F 'INTERP' >/dev/null; then
+            echo "::error::Binary contains PT_INTERP; expected static-PIE"
+            exit 1
+          fi
+
+          TLS_ALIGN=$(readelf -lW "$BIN" | awk '$1 == "TLS" {print $NF}')
+          echo "PT_TLS p_align: $TLS_ALIGN"
+          if [ -n "$TLS_ALIGN" ] && [ "$((TLS_ALIGN))" -lt 64 ]; then
+            echo "::error::PT_TLS p_align is $TLS_ALIGN, must be >= 64 for Android Bionic"
+            exit 1
+          fi
+      - name: Smoke-test produced Windows binary
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: .\target\${{ matrix.target }}\release\moviebox-tui.exe --version
+
+      - name: Archive Unix
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/moviebox-tui dist/
+          cp README.md dist/
+          cp LICENSE-* dist/ || true
+
+          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]; then
+            tar -czvf MovieBox_Linux_x64.tar.gz -C dist .
+          elif [ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]; then
+            tar -czvf MovieBox_Linux_arm64.tar.gz -C dist .
+          else
+            tar -czvf moviebox-tui-${{ matrix.target }}.tar.gz -C dist .
+          fi
+
+      - name: Archive Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\moviebox-tui.exe" "dist\"
+          Copy-Item "README.md" "dist\"
+          $licenses = Get-ChildItem "LICENSE-*" -ErrorAction SilentlyContinue
+          if ($licenses) {
+            Copy-Item $licenses.FullName "dist\"
+          } else {
+            Write-Host "No license files found"
+          }
+          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") {
+            Compress-Archive -Path dist\* -DestinationPath MovieBox_Windows_arm64.zip
+          } else {
+            Compress-Archive -Path dist\* -DestinationPath MovieBox_Windows_x64.zip
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.zip
+
+  build-macos-universal:
+    name: Build macOS Universal
+    needs: [check-version, build]
+    if: needs.check-version.outputs.is_new == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-x86_64-apple-darwin
+          path: x86_64
+
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-aarch64-apple-darwin
+          path: aarch64
+
+      - name: Create Universal Binary
+        run: |
+          mkdir -p universal/dist
+          tar -xzf x86_64/moviebox-tui-x86_64-apple-darwin.tar.gz -C x86_64/
+          tar -xzf aarch64/moviebox-tui-aarch64-apple-darwin.tar.gz -C aarch64/
+          lipo -create -output universal/dist/moviebox-tui x86_64/moviebox-tui aarch64/moviebox-tui
+          cp README.md universal/dist/
+          cp LICENSE-* universal/dist/ || true
+          cd universal/dist
+          tar -czvf ../../MovieBox_macOS_Universal.tar.gz .
+
+      - name: Upload Universal Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-universal-apple-darwin
+          path: MovieBox_macOS_Universal.tar.gz
+
+  build-android:
+    name: Build Android (aarch64-linux-android)
+    needs: [check-version, preflight]
+    if: needs.check-version.outputs.is_new == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "release-build-android-aarch64"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Build Android binary
+        run: |
+          TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$TOOLCHAIN" >> $GITHUB_PATH
+          export PATH="$TOOLCHAIN:$PATH"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+
+          cargo build --release --all-features --locked --target aarch64-linux-android
+
+      - name: Validate Android ELF headers
+        run: |
+          BIN="target/aarch64-linux-android/release/moviebox-tui"
+          readelf -lW "$BIN" | grep -F "PHDR" || { echo "::error::Missing PT_PHDR"; exit 1; }
+          readelf -lW "$BIN" | grep -F "/system/bin/linker64" || { echo "::error::Missing Android PT_INTERP"; exit 1; }
+
+      - name: Archive Android
+        run: |
+          mkdir dist
+          cp target/aarch64-linux-android/release/moviebox-tui dist/
+          cp README.md dist/
+          cp LICENSE-* dist/ || true
+          tar -czvf MovieBox_Android_arm64.tar.gz -C dist .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-aarch64-linux-android
+          path: MovieBox_Android_arm64.tar.gz
+
+  release:
+    name: Create Release
+    needs: [check-version, build, build-macos-universal, build-android]
+    if: needs.check-version.outputs.is_new == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Extract Release Notes from CHANGELOG.md
+        id: changelog
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          NOTES=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { flag=0 }
+            flag { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$NOTES" ]; then
+            NOTES=$(awk '
+              /^## \[Unreleased\]/ { flag=1; next }
+              flag && /^## \[/ { flag=0 }
+              flag { print }
+            ' CHANGELOG.md)
+          fi
+
+          if [ -n "$NOTES" ]; then
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            echo "$NOTES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "has_notes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_notes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate all expected release artifacts exist
+        run: |
+          EXPECTED=(
+            "MovieBox_Linux_x64.tar.gz"
+            "MovieBox_Linux_arm64.tar.gz"
+            "MovieBox_Android_arm64.tar.gz"
+            "MovieBox_macOS_Universal.tar.gz"
+            "MovieBox_Windows_x64.zip"
+            "MovieBox_Windows_arm64.zip"
+          )
+          for asset in "${EXPECTED[@]}"; do
+            if ! find artifacts -type f -name "$asset" | grep -q .; then
+              echo "::error::Required release artifact '$asset' was not produced."
+              exit 1
+            fi
+            echo "✔ Found required artifact: $asset"
+          done
+
+      - name: Generate checksums
+        run: |
+          find artifacts -type f \( -name 'MovieBox_*.tar.gz' -o -name 'MovieBox_*.zip' \) -print0 |
+            sort -z |
+            while IFS= read -r -d '' file; do
+              hash=$(sha256sum "$file" | awk '{print $1}')
+              echo "$hash  $(basename "$file")"
+            done > SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            artifacts/**/MovieBox_*.tar.gz
+            artifacts/**/MovieBox_*.zip
+            SHA256SUMS
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: "v${{ needs.check-version.outputs.version }}"
+          name: "v${{ needs.check-version.outputs.version }}"
+          body: ${{ steps.changelog.outputs.notes }}
+          generate_release_notes: ${{ steps.changelog.outputs.has_notes != 'true' }}
+          files: |
+            artifacts/**/MovieBox_*.tar.gz
+            artifacts/**/MovieBox_*.zip
+            SHA256SUMS

@@ -1,0 +1,139 @@
+/* Typography & Content Layout */
+:root {
+    --content-max-width: 860px;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+.content p,
+.content ol,
+.content ul {
+    line-height: 1.62em;
+}
+
+.content ul > li,
+.content ol > li {
+    margin-bottom: 0.45em;
+}
+
+/* Inline Code Badges */
+:not(pre) > code {
+    background-color: var(--theme-hover);
+    padding: 0.15em 0.38em;
+    border-radius: 4px;
+    font-size: 0.88em;
+    border: 1px solid var(--table-border-color);
+}
+
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+h5 code,
+h6 code {
+    font-size: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+/* Code Block Containers */
+pre {
+    border-radius: 8px;
+    border: 1px solid var(--table-border-color);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    scrollbar-width: thin;
+    scrollbar-color: var(--table-border-color) transparent;
+}
+
+pre::-webkit-scrollbar {
+    height: 6px;
+}
+
+pre::-webkit-scrollbar-thumb {
+    background: var(--table-border-color);
+    border-radius: 3px;
+}
+
+/* Table Containers & Interactive Rows */
+.table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 1.2em 0;
+    border: 1px solid var(--table-border-color);
+    border-radius: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--table-border-color) transparent;
+}
+
+.table-wrapper::-webkit-scrollbar {
+    height: 5px;
+}
+
+.table-wrapper::-webkit-scrollbar-thumb {
+    background: var(--table-border-color);
+    border-radius: 3px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+table th {
+    text-align: left;
+    white-space: nowrap;
+}
+
+table tbody tr:hover {
+    background-color: var(--theme-hover);
+    transition: background-color 0.15s ease;
+}
+
+/* Media Presentation */
+.content img,
+.content video {
+    border-radius: 8px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+}
+
+/* Mobile & Small Screen Responsiveness */
+@media only screen and (max-width: 768px) {
+    table {
+        font-size: 0.88rem;
+    }
+
+    table td,
+    table th {
+        padding: 6px 8px;
+    }
+
+    table code {
+        font-size: 0.82em;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+    }
+}
+
+@media only screen and (max-width: 600px) {
+    .menu-title {
+        font-size: 1.15rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+    }
+}
+
+@media only screen and (max-width: 480px) {
+    table td,
+    table th {
+        padding: 5px 6px;
+        font-size: 0.82rem;
+    }
+
+    table code {
+        font-size: 0.78em;
+    }
+}
