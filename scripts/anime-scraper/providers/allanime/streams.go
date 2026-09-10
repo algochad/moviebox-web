@@ -27,8 +27,8 @@ type allanimeResolvedStream struct {
 }
 
 var (
-	allanimeClockRefererPattern = regexp.MustCompile(`"Referer":"([^"]+)"`)
-	allanimeClockSubtitlePattern = regexp.MustCompile(`"subtitles":\[\{"lang":"en","label":"English","default":"default","src":"([^"]+)"`)
+	allanimeClockRefererPattern     = regexp.MustCompile(`"Referer":"([^"]+)"`)
+	allanimeClockSubtitlePattern    = regexp.MustCompile(`"subtitles":\[\{"lang":"en","label":"English","default":"default","src":"([^"]+)"`)
 	allanimeStreamResolutionPattern = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
 	allanimeStreamBandwidthPattern  = regexp.MustCompile(`BANDWIDTH=(\d+)`)
 )
@@ -36,7 +36,10 @@ var (
 func getAllanimeEpisodeStreamsForMode(id, mode string, epNo int) ([]string, map[string]providers.StreamPlaybackHint, error) {
 	sourceUrls, err := fetchEpisodeSourcesForMode(id, mode, epNo)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("allanime episode query failed for show %q ep %d: %w", id, epNo, err)
+	}
+	if len(sourceUrls) == 0 {
+		return nil, nil, fmt.Errorf("allanime returned no episode sources for show %q ep %d (upstream NEED_CAPTCHA/Cloudflare block on api.allanime.day)", id, epNo)
 	}
 	return getLinksFromEncodedSourceUrls(sourceUrls)
 }
@@ -65,7 +68,7 @@ func getLinksFromEncodedSourceUrls(sourceUrls []allanimeSource) ([]string, map[s
 		})
 	}
 	if len(jobs) == 0 {
-		return nil, nil, fmt.Errorf("no encoded Allanime provider sources found")
+		return nil, nil, fmt.Errorf("no encoded Allanime provider sources found (%d raw source(s); upstream api.allanime.day episode query is returning NEED_CAPTCHA/empty)", len(sourceUrls))
 	}
 
 	type streamResult struct {

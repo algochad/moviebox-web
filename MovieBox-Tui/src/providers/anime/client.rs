@@ -830,7 +830,13 @@ impl AnimeProvider {
     async fn scraper_allanime_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
         let url = format!("{}/resolve", ANIME_SCRAPER_SIDECAR);
 
-        let response = self.http.post(&url)
+        // Sidecar can take 17s+ (AniNeko vibe-proxy startup); use a dedicated long-timeout client
+        let sidecar_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| ProviderError::Network(format!("Failed to build sidecar client: {}", e)))?;
+
+        let response = sidecar_client.post(&url)
             .json(&serde_json::json!({
                 "showId": show_id,
                 "episode": episode,

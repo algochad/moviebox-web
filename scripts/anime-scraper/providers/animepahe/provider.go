@@ -175,9 +175,26 @@ func (p *Provider) refreshBypass() error {
 	return nil
 }
 
+// rodBrowserBin returns an explicit browser binary path when the operator pins
+// one via environment (checked in priority order). go-rod has no ROD_BROWSER_BIN
+// convention of its own, so we honor several common names here.
+func rodBrowserBin() string {
+	for _, key := range []string{"ROD_BIN", "ROD_BROWSER_BIN", "CHROME_BIN", "CHROME_PATH", "CHROME"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func solveAnimepaheBrowserChallengeWithRod() (httpCookies []*http.Cookie, err error) {
 	if err := rod.Try(func() {
-		l := launcher.New().Headless(true)
+		// NoSandbox is required in containers/CI kernels where the Chromium
+		// SUID/namespace sandbox is unavailable ("No usable sandbox" crash).
+		l := launcher.New().Headless(true).NoSandbox(true)
+		if bin := rodBrowserBin(); bin != "" {
+			l = l.Bin(bin)
+		}
 		defer l.Cleanup()
 		browser := rod.New().ControlURL(l.MustLaunch()).MustConnect()
 		defer browser.MustClose()
@@ -185,7 +202,7 @@ func solveAnimepaheBrowserChallengeWithRod() (httpCookies []*http.Cookie, err er
 		page := browser.MustPage("https://animepahe.pw/")
 		page.MustWaitLoad()
 
-		for i := 0; i < 30; i++ {
+		for range 30 {
 			info, err := page.Info()
 			if err == nil && info.Title != "DDoS-Guard" && info.Title != "Just a moment..." && info.Title != "" {
 				break
@@ -326,10 +343,10 @@ func (p *Provider) ResolveProviderID(providerID, query string) (string, error) {
 }
 
 type animepaheSearchResponse struct {
-	Total       int                   `json:"total"`
-	PerPage     int                   `json:"per_page"`
-	CurrentPage int                   `json:"current_page"`
-	LastPage    int                   `json:"last_page"`
+	Total       int          `json:"total"`
+	PerPage     int          `json:"per_page"`
+	CurrentPage int          `json:"current_page"`
+	LastPage    int          `json:"last_page"`
 	Data        []SearchItem `json:"data"`
 }
 

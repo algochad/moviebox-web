@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"anime-scraper/providers"
 	_ "anime-scraper/providers/allanime"
@@ -16,10 +17,10 @@ import (
 )
 
 type StreamRequest struct {
-	ShowID    string `json:"showId"`
-	Episode   int    `json:"episode"`
-	Mode      string `json:"mode"` // "sub" or "dub"
-	Provider  string `json:"provider"` // optional: specific provider name
+	ShowID   string `json:"showId"`
+	Episode  int    `json:"episode"`
+	Mode     string `json:"mode"`     // "sub" or "dub"
+	Provider string `json:"provider"` // optional: specific provider name
 }
 
 type StreamResponse struct {
@@ -51,6 +52,7 @@ type SearchResult struct {
 	Thumbnail string `json:"thumbnail"`
 	Provider  string `json:"provider"`
 }
+
 func getProviders() []providers.Provider {
 	names := providers.RegisteredNames()
 	var result []providers.Provider
@@ -60,6 +62,72 @@ func getProviders() []providers.Provider {
 		}
 	}
 	return result
+}
+
+// looksLikeAllAnimeID reports whether showID has the shape of an AllAnime
+// show id (long mixed-case alphanumeric token, e.g. "srGrP23qJnjsHrRYD").
+// Only AllAnime (and AnimePahe session strings) accept such IDs; Senshi
+// wants a numeric MAL id, AniPub a numeric show id, AniNeko a slug.
+func looksLikeAllAnimeID(showID string) bool {
+	if len(showID) < 10 || len(showID) > 32 {
+		return false
+	}
+	hasLower, hasUpper := false, false
+	for _, r := range showID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return hasLower || hasUpper
+}
+
+func isNumericID(showID string) bool {
+	if showID == "" {
+		return false
+	}
+	for _, r := range showID {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// providerAcceptsID skips providers whose ID format provably cannot match,
+// so logs explain the skip instead of surfacing confusing downstream errors.
+func providerAcceptsID(provider, showID string) (bool, string) {
+	switch provider {
+	case "senshi", "anipub":
+		if !isNumericID(showID) {
+			return false, "expects numeric id (MAL id / anipub show id)"
+		}
+	case "anineko":
+		if isNumericID(showID) || looksLikeAllAnimeID(showID) {
+			return false, "expects anineko slug (e.g. from /search provider=anineko)"
+		}
+	case "animepahe":
+		// AnimePahe ids are "<releaseID>:<session>", a bare release id, or a
+		// session token; an AllAnime-style long token without ":" is not one.
+		if looksLikeAllAnimeID(showID) && len(showID) > 10 && !containsColon(showID) && !isNumericID(showID) {
+			return false, "expects animepahe id, not AllAnime id (search provider=animepahe first)"
+		}
+	}
+	return true, ""
+}
+
+func containsColon(s string) bool {
+	for _, r := range s {
+		if r == ':' {
+			return true
+		}
+	}
+	return false
 }
 
 func handleResolve(w http.ResponseWriter, r *http.Request) {
@@ -90,10 +158,18 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	allProviders := getProviders()
 	var streams []StreamInfo
+	var failures []string
 
 	// Try specific provider if requested, otherwise try all in order
 	for _, p := range allProviders {
 		if req.Provider != "" && p.Name() != req.Provider {
+			continue
+		}
+
+		if ok, reason := providerAcceptsID(p.Name(), req.ShowID); !ok {
+			msg := p.Name() + ": skipped: " + reason
+			log.Printf("[Resolve] Provider %s skipped for show %s: %s", p.Name(), req.ShowID, reason)
+			failures = append(failures, msg)
 			continue
 		}
 
@@ -102,6 +178,7 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 		urls, err := p.GetEpisodeURL(config, req.ShowID, req.Episode)
 		if err != nil {
 			log.Printf("[Resolve] Provider %s failed: %v", p.Name(), err)
+			failures = append(failures, p.Name()+": "+err.Error())
 			continue
 		}
 
@@ -119,7 +196,11 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(streams) == 0 {
-		json.NewEncoder(w).Encode(StreamResponse{Error: "No streams found from any provider"})
+		errMsg := "No streams found from any provider"
+		if len(failures) > 0 {
+			errMsg += ": " + strings.Join(failures, " | ")
+		}
+		json.NewEncoder(w).Encode(StreamResponse{Error: errMsg})
 		return
 	}
 

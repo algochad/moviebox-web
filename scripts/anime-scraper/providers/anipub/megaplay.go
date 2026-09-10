@@ -11,28 +11,27 @@ import (
 )
 
 var (
-	videoPathRE = regexp.MustCompile(`/video/(\d+)/(sub|dub)`)
+	videoPathRE = regexp.MustCompile(`/(?:video|play)/(\d+)/(sub|dub)`)
+	playPathRE  = regexp.MustCompile(`/play/(\d+)/(\d+)/(sub|dub)`)
 	dataIDRE    = regexp.MustCompile(`data-id="(\d+)"`)
 )
 
+// resolveMegaplayStream resolves an anipub video link to a direct HLS URL.
+// AniPub emits two link shapes: legacy https://anipub.xyz/video/<embedID>/<mode>
+// and current https://anipub.xyz/play/<malID>/<epNo>/<mode> (embedID unknown
+// until the play page's megaplay iframe is followed). Both are handled here.
 func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 	videoLink = strings.TrimSpace(videoLink)
 	if videoLink == "" {
 		return "", "", fmt.Errorf("empty video link")
 	}
 
-	embedID, linkMode, err := parseVideoLink(videoLink)
+	mode = providers.NormalizeTranslationType(mode)
+
+	streamPage, err := megaplayStreamPageURL(videoLink, mode)
 	if err != nil {
 		return "", "", err
 	}
-	mode = providers.NormalizeTranslationType(mode)
-	if mode == "dub" {
-		linkMode = "dub"
-	} else {
-		linkMode = "sub"
-	}
-
-	streamPage := fmt.Sprintf("%s/stream/s-2/%s/%s", megaplayBaseURL, embedID, linkMode)
 	html, err := fetchString(streamPage, baseURL+"/")
 	if err != nil {
 		return "", "", err
@@ -43,10 +42,19 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 		return "", "", fmt.Errorf("megaplay data-id not found")
 	}
 
-	sourcesURL := fmt.Sprintf("%s/stream/getSources?id=%s", megaplayBaseURL, dataID[1])
+	// getSourcesNew returns sources.file directly; the legacy getSources
+	// endpoint omits it and only returns an "enc" token for browser-side
+	// decryption, so prefer the new endpoint and fall back to the old one.
 	var payload megaplaySourcesResponse
-	if err := fetchJSON(sourcesURL, streamPage, &payload); err != nil {
+	if err := fetchJSON(megaplaySourcesURL(dataID[1], true), streamPage, &payload); err != nil {
 		return "", "", err
+	}
+	if strings.TrimSpace(payload.Sources.File) == "" {
+		var legacy megaplaySourcesResponse
+		if err := fetchJSON(megaplaySourcesURL(dataID[1], false), streamPage, &legacy); err != nil {
+			return "", "", err
+		}
+		payload.Tracks = legacy.Tracks
 	}
 
 	streamURL := strings.TrimSpace(payload.Sources.File)
@@ -55,6 +63,47 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 	}
 	subtitle := pickSubtitleTrack(payload, mode)
 	return streamURL, subtitle, nil
+}
+
+// megaplayStreamPageURL maps an anipub video link to its megaplay watch page.
+func megaplayStreamPageURL(videoLink, mode string) (string, error) {
+	parsed, err := url.Parse(videoLink)
+	if err != nil {
+		return "", fmt.Errorf("parse video link: %w", err)
+	}
+	if strings.Contains(parsed.Host, "megaplay.buzz") {
+		return videoLink, nil
+	}
+	if matches := videoPathRE.FindStringSubmatch(parsed.Path); len(matches) == 3 {
+		embedID, linkMode := matches[1], matches[2]
+		if _, err := strconv.Atoi(embedID); err != nil {
+			return "", fmt.Errorf("invalid embed id %q", embedID)
+		}
+		if mode == "dub" {
+			linkMode = "dub"
+		} else {
+			linkMode = "sub"
+		}
+		return fmt.Sprintf("%s/stream/s-2/%s/%s", megaplayBaseURL, embedID, linkMode), nil
+	}
+	if matches := playPathRE.FindStringSubmatch(parsed.Path); len(matches) == 4 {
+		malID, epNo := matches[1], matches[2]
+		linkMode := matches[3]
+		if mode == "dub" {
+			linkMode = "dub"
+		} else {
+			linkMode = "sub"
+		}
+		return fmt.Sprintf("%s/stream/mal/%s/%s/%s", megaplayBaseURL, malID, epNo, linkMode), nil
+	}
+	return "", fmt.Errorf("unsupported video link %q", videoLink)
+}
+
+func megaplaySourcesURL(dataID string, useNewEndpoint bool) string {
+	if useNewEndpoint {
+		return fmt.Sprintf("%s/stream/getSourcesNew?id=%s", megaplayBaseURL, dataID)
+	}
+	return fmt.Sprintf("%s/stream/getSources?id=%s", megaplayBaseURL, dataID)
 }
 
 func parseVideoLink(videoLink string) (embedID, mode string, err error) {
