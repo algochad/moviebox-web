@@ -827,7 +827,78 @@ impl crate::providers::ReleaseProvider for AnimeProvider {
 }
 
 impl AnimeProvider {
+    /// AllAnime show ids are long mixed-case alphanumeric tokens
+    /// (e.g. "srGrP23qJnjsHrRYD"). Slugs ("one-piece") contain '-'
+    /// and AniList ids are numeric, so neither matches.
+    fn looks_like_allanime_id(show_id: &str) -> bool {
+        let id = show_id.trim();
+        if id.len() < 10 || id.len() > 32 {
+            return false;
+        }
+        let mut has_letter = false;
+        for c in id.chars() {
+            if c.is_ascii_alphabetic() {
+                has_letter = true;
+            } else if !c.is_ascii_digit() {
+                return false;
+            }
+        }
+        has_letter
+    }
+
+    /// Resolve an AllAnime show id to its display title via the AllAnime
+    /// details query, so the sidecar can search providers by title.
+    async fn allanime_title_for_id(&self, show_id: &str) -> Result<String, ProviderError> {
+        let data: AllAnimeDetailsData = self
+            .post_allanime_graphql(
+                ALLANIME_DETAILS_QUERY,
+                serde_json::json!({ "id": show_id }),
+            )
+            .await?;
+        let card = data.show.ok_or(ProviderError::NotFound)?;
+        Ok(Self::allanime_pick_title(&card))
+    }
+
     async fn scraper_allanime_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
+        // AllAnime ids (e.g. "srGrP23qJnjsHrRYD") fail direct episode
+        // queries (Cloudflare captcha on api.allanime.day), so resolve the
+        // title first and let the sidecar search providers by title instead.
+        if Self::looks_like_allanime_id(show_id) {
+            if let Ok(title) = self.allanime_title_for_id(show_id).await {
+                return self
+                    .post_sidecar_resolve(
+                        serde_json::json!({
+                            "query": title,
+                            "episode": episode,
+                            "mode": "sub"
+                        }),
+                        show_id,
+                        episode,
+                    )
+                    .await;
+            }
+            // Title lookup failed; fall through to the showId path below.
+        }
+
+        // Fast path for slugs ("one-piece") and numeric ids.
+        self.post_sidecar_resolve(
+            serde_json::json!({
+                "showId": show_id,
+                "episode": episode,
+                "mode": "sub"
+            }),
+            show_id,
+            episode,
+        )
+        .await
+    }
+
+    async fn post_sidecar_resolve(
+        &self,
+        body: serde_json::Value,
+        show_id: &str,
+        episode: usize,
+    ) -> Result<Vec<Release>, ProviderError> {
         let url = format!("{}/resolve", ANIME_SCRAPER_SIDECAR);
 
         // Sidecar can take 17s+ (AniNeko vibe-proxy startup); use a dedicated long-timeout client
@@ -837,11 +908,7 @@ impl AnimeProvider {
             .map_err(|e| ProviderError::Network(format!("Failed to build sidecar client: {}", e)))?;
 
         let response = sidecar_client.post(&url)
-            .json(&serde_json::json!({
-                "showId": show_id,
-                "episode": episode,
-                "mode": "sub"
-            }))
+            .json(&body)
             .send().await
             .map_err(|e| ProviderError::Network(format!("Scraper sidecar unavailable: {}", e)))?;
 
@@ -1168,6 +1235,7 @@ impl AnimeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{Provider, ReleaseProvider};
 
     #[tokio::test]
     #[ignore = "requires network access to AniList"]
@@ -1192,10 +1260,16 @@ mod tests {
         assert!(!details.seasons.is_empty());
     }
 
-    #[tokio::test]
-    async fn episode_streams_placeholder_returns_empty() {
-        let provider = AnimeProvider::new(Client::new());
-        let streams = provider.episode_streams("1", 1, 1).await.unwrap();
-        assert!(streams.is_empty());
+    #[test]
+    fn allanime_id_detection_routes_ids_vs_slugs() {
+        // AllAnime ID from the ticket: must take the title->query path.
+        assert!(AnimeProvider::looks_like_allanime_id("srGrP23qJnjsHrRYD"));
+        // Slugs contain '-' and take the showId fast path.
+        assert!(!AnimeProvider::looks_like_allanime_id("one-piece"));
+        assert!(!AnimeProvider::looks_like_allanime_id("naruto-shippuden"));
+        // AniList numeric ids take the showId fast path.
+        assert!(!AnimeProvider::looks_like_allanime_id("1"));
+        assert!(!AnimeProvider::looks_like_allanime_id("21"));
     }
+
 }

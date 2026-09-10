@@ -18,6 +18,7 @@ import (
 
 type StreamRequest struct {
 	ShowID   string `json:"showId"`
+	Query    string `json:"query,omitempty"`
 	Episode  int    `json:"episode"`
 	Mode     string `json:"mode"`     // "sub" or "dub"
 	Provider string `json:"provider"` // optional: specific provider name
@@ -142,7 +143,7 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ShowID == "" || req.Episode == 0 {
+	if req.Episode == 0 || (req.ShowID == "" && strings.TrimSpace(req.Query) == "") {
 		json.NewEncoder(w).Encode(StreamResponse{Error: "Missing showId or episode"})
 		return
 	}
@@ -160,26 +161,26 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 	var streams []StreamInfo
 	var failures []string
 
-	// Try specific provider if requested, otherwise try all in order
-	for _, p := range allProviders {
+	// resolveViaProvider tries GetEpisodeURL on one provider and appends hits.
+	tryProvider := func(p providers.Provider, showID string) bool {
 		if req.Provider != "" && p.Name() != req.Provider {
-			continue
+			return false
 		}
 
-		if ok, reason := providerAcceptsID(p.Name(), req.ShowID); !ok {
+		if ok, reason := providerAcceptsID(p.Name(), showID); !ok {
 			msg := p.Name() + ": skipped: " + reason
-			log.Printf("[Resolve] Provider %s skipped for show %s: %s", p.Name(), req.ShowID, reason)
+			log.Printf("[Resolve] Provider %s skipped for show %s: %s", p.Name(), showID, reason)
 			failures = append(failures, msg)
-			continue
+			return false
 		}
 
-		log.Printf("[Resolve] Trying provider %s for show %s ep %d", p.Name(), req.ShowID, req.Episode)
+		log.Printf("[Resolve] Trying provider %s for show %s ep %d", p.Name(), showID, req.Episode)
 
-		urls, err := p.GetEpisodeURL(config, req.ShowID, req.Episode)
+		urls, err := p.GetEpisodeURL(config, showID, req.Episode)
 		if err != nil {
 			log.Printf("[Resolve] Provider %s failed: %v", p.Name(), err)
 			failures = append(failures, p.Name()+": "+err.Error())
-			continue
+			return false
 		}
 
 		for i, url := range urls {
@@ -189,9 +190,49 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 				Provider: p.Name(),
 			})
 		}
+		return len(urls) > 0
+	}
 
-		if len(streams) > 0 {
-			break // Use first provider that returns results
+	// Try direct showId first, unless the request only carries a query.
+	if req.ShowID != "" {
+		// Try specific provider if requested, otherwise try all in order
+		for _, p := range allProviders {
+			if tryProvider(p, req.ShowID) {
+				break // Use first provider that returns results
+			}
+			if len(streams) > 0 {
+				break
+			}
+		}
+	}
+
+	// Query fallback: search providers by title and resolve the first hit.
+	// Covers callers that only have a title (e.g. AllAnime id -> title mapping
+	// on the Rust side) or whose raw showId produced no streams.
+	if len(streams) == 0 && strings.TrimSpace(req.Query) != "" {
+		query := strings.TrimSpace(req.Query)
+		log.Printf("[Resolve] Falling back to search for query %q ep %d", query, req.Episode)
+		for _, p := range allProviders {
+			if req.Provider != "" && p.Name() != req.Provider {
+				continue
+			}
+			options, err := p.SearchAnime(query, req.Mode)
+			if err != nil {
+				log.Printf("[Resolve] Search via %s failed: %v", p.Name(), err)
+				failures = append(failures, p.Name()+" search: "+err.Error())
+				continue
+			}
+			if len(options) == 0 {
+				continue
+			}
+			best := options[0]
+			log.Printf("[Resolve] Search via %s matched %q (%s), resolving ep %d", p.Name(), best.Title, best.Key, req.Episode)
+			if tryProvider(p, best.Key) {
+				break
+			}
+			if len(streams) > 0 {
+				break
+			}
 		}
 	}
 
