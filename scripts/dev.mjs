@@ -66,6 +66,8 @@ const REDIS_HOST_PORT = process.env.REDIS_HOST_PORT ?? "6379";
 const DATABASE_URL =
   process.env.DATABASE_URL ?? `postgres://moviebox:moviebox@127.0.0.1:${PG_PORT}/moviebox`;
 const REDIS_URL = process.env.REDIS_URL ?? `redis://127.0.0.1:${REDIS_HOST_PORT}`;
+const SCRAPER_PORT = Number(process.env.SCRAPER_PORT ?? 9798);
+const SCRAPER_URL = `http://${HOST}:${SCRAPER_PORT}`;
 const COMPOSE_HINT = "docker compose up -d db redis";
 
 function portOpen(port, host = "127.0.0.1") {
@@ -227,6 +229,57 @@ async function startApi() {
   console.error(`Start Postgres + Redis with: ${COMPOSE_HINT}`);
 }
 
+async function startScraper() {
+  if (await portOpen(SCRAPER_PORT)) {
+    console.log(`Anime scraper already listening on ${HOST}:${SCRAPER_PORT} — reusing it.`);
+    return;
+  }
+  
+  const goBinary = join(ROOT, "scripts/anime-scraper/anime-scraper");
+  const goSource = join(ROOT, "scripts/anime-scraper/main.go");
+  
+  // Build Go binary if source is newer or binary doesn't exist
+  if (!existsSync(goBinary) || statSync(goSource).mtimeMs > statSync(goBinary).mtimeMs) {
+    console.log("Building anime scraper Go binary…");
+    const build = spawn("go", ["build", "-o", goBinary, "."], {
+      cwd: join(ROOT, "scripts/anime-scraper"),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    prefix(build, "scraper:build");
+    await new Promise((resolve) => build.on("exit", resolve));
+    if (!existsSync(goBinary)) {
+      console.error("Anime scraper Go build failed — is Go installed?");
+      return;
+    }
+  }
+  
+  console.log(`Starting anime scraper sidecar on ${HOST}:${SCRAPER_PORT}…`);
+  const scraper = spawn(goBinary, [], {
+    env: {
+      ...process.env,
+      SCRAPER_PORT: String(SCRAPER_PORT),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  children.push(scraper);
+  prefix(scraper, "scraper");
+
+  const ready = await new Promise((resolve) => {
+    const until = Date.now() + 30_000;
+    const poll = async () => {
+      if (await portOpen(SCRAPER_PORT)) return resolve(true);
+      if (Date.now() > until || scraper.exitCode != null) return resolve(false);
+      setTimeout(poll, 500);
+    };
+    void poll();
+  });
+  if (!ready) {
+    console.error("Anime scraper failed to become ready.");
+    return;
+  }
+  console.log(`Anime scraper ready on ${SCRAPER_URL}`);
+}
+
 async function main() {
   const already = await portOpen(PORT);
   if (already) {
@@ -265,6 +318,8 @@ async function main() {
   }
 
   await startApi();
+
+  await startScraper();
 
   const web = spawn("next", ["dev", "-p", String(WEB_PORT)], {
     env: { ...process.env, MB_BACKEND_URL: BACKEND_URL, API_URL },

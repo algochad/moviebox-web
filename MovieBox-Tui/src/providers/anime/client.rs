@@ -18,7 +18,7 @@ const ALLANIME_PERSISTED_QUERY_HASH: &str = "d405d0edd690624b66baba3068e0edc3ac9
 const ALLANIME_CRYPTO_KEY: &str = "Xot36i3lK3:v1";
 
 const SENSHI_BASE_URL: &str = "https://senshi.live";
-
+const ANIME_SCRAPER_SIDECAR: &str = "http://127.0.0.1:9798";
 const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
 const SEARCH_QUERY: &str = r#"
@@ -806,19 +806,82 @@ impl crate::providers::ReleaseProvider for AnimeProvider {
         _season: usize,
         episode: usize,
     ) -> Result<Vec<Release>, ProviderError> {
-        // Current state of anime streaming providers (Sep 2026):
-        // - AllAnime: Requires AA_CRYPTO (dynamic JS) for episode queries
-        // - AniPub: Domain down (404)
-        // - Senshi: Empty response (Cloudflare/down)
-        // - Gogoanime: Dead domains
-        // Metadata/search/trending work fine via AllAnime API fallback.
+        // Try Puppeteer sidecar for AllAnime (handles AA_CRYPTO via headless browser)
+        if let Ok(releases) = self.scraper_allanime_streams(id, episode).await {
+            if !releases.is_empty() {
+                return Ok(releases);
+            }
+        }
+
+        // Fallback to direct AllAnime API (may fail without crypto)
+        if let Ok(releases) = self.allanime_episode_streams(id, episode).await {
+            if !releases.is_empty() {
+                return Ok(releases);
+            }
+        }
+
         Err(ProviderError::Unavailable(
-            "Anime streaming is temporarily unavailable due to provider anti-bot measures (AllAnime requires dynamic crypto, others down). Metadata and search work fine.".to_string()
+            "No playable streams found. Ensure the anime scraper sidecar is running (npm run scraper).".to_string()
         ))
     }
 }
 
 impl AnimeProvider {
+    async fn scraper_allanime_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
+        let url = format!("{}/resolve", ANIME_SCRAPER_SIDECAR);
+
+        let response = self.http.post(&url)
+            .json(&serde_json::json!({
+                "showId": show_id,
+                "episode": episode,
+                "mode": "sub"
+            }))
+            .send().await
+            .map_err(|e| ProviderError::Network(format!("Scraper sidecar unavailable: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ProviderError::Unavailable(format!("Scraper returned HTTP {}", response.status())));
+        }
+
+        let json: serde_json::Value = response.json().await
+            .map_err(|e| ProviderError::Parsing(e.to_string()))?;
+
+        let streams = json.get("streams")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| ProviderError::Parsing("No streams in scraper response".to_string()))?;
+
+        let mut releases = Vec::new();
+        for stream in streams {
+            if let Some(stream_url) = stream.get("url").and_then(|v| v.as_str()) {
+                let quality = stream.get("quality").and_then(|v| v.as_str()).unwrap_or("auto").to_string();
+                let provider = stream.get("provider").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+
+                releases.push(Release {
+                    provider: ProviderKind::Anime,
+                    filename: format!("{}-ep{}", show_id, episode),
+                    quality: Some(quality),
+                    codec: None,
+                    language: Some("Japanese".to_string()),
+                    size_bytes: None,
+                    season: Some(1),
+                    episode: Some(episode),
+                    resource_id: Some(format!("scraper-{}-{}", show_id, episode)),
+                    mirrors: vec![crate::providers::models::SourceMirror {
+                        label: format!("Anime ({})", provider),
+                        resolver_url: stream_url.to_string(),
+                        headers: vec![
+                            ("Referer".to_string(), "https://allanime.day/".to_string()),
+                            ("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string()),
+                        ],
+                        direct_file: true,
+                    }],
+                });
+            }
+        }
+
+        Ok(releases)
+    }
+
     async fn allanime_episode_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
         let variables = serde_json::json!({
             "showId": show_id,
