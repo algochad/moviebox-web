@@ -638,6 +638,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         // Exception: static import crashes SSR; load only when needed in browser
         const dashjs = (await import("dashjs")).default;
         const dash = dashjs.MediaPlayer().create();
+        dashRef.current = dash;
         const fatal = (code: number | undefined) =>
           code != null && (code === 27 || code === 34 || code === 2 || code === 11);
         dash.on(dashjs.MediaPlayer.events.ERROR, (data: unknown) => {
