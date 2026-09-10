@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
  * Dev orchestrator: builds/launches the Rust backend (MovieBox-Tui/server),
- * the NestJS account service (auth/) and the Next.js dev server together,
+ * the Archlast Cine API (api/, NestJS) and the Next.js dev server together,
  * restarting none of them if their port is already serving.
  *
  * Env overrides: MB_BACKEND_URL (default http://127.0.0.1:9797),
  * MOVIEBOX_SERVER_PORT (default 9797), MOVIEBOX_PROXY_BASE (default
  * http://localhost:3000 — the external origin that browsers use, needed to
  * rewrite DASH manifest URLs when running behind the Next dev server),
- * AUTH_PORT (default 4100, the Nest service), AUTH_SECRET, DATABASE_URL,
+ * API_PORT (default 4100, the Nest service), JWT_SECRET, DATABASE_URL,
  * REDIS_URL.
  *
- * The account service needs Postgres + Redis; when they are not running the
+ * The Archlast Cine API needs Postgres + Redis; when they are not running the
  * script still boots everything and prints `docker compose up -d db redis`.
  */
 import { spawn } from "node:child_process";
@@ -58,9 +58,9 @@ const WEB_PORT = 3000;
 const MANIFEST = new URL("../MovieBox-Tui/server/Cargo.toml", import.meta.url).pathname;
 const BACKEND_URL = process.env.MB_BACKEND_URL ?? `http://${HOST}:${PORT}`;
 
-const AUTH_DIR = join(ROOT, "auth");
-const AUTH_PORT = Number(process.env.AUTH_PORT ?? 4100);
-const AUTH_URL = `http://${HOST}:${AUTH_PORT}`;
+const API_DIR = join(ROOT, "api");
+const API_PORT = Number(process.env.API_PORT ?? 4100);
+const API_URL = `http://${HOST}:${API_PORT}`;
 const PG_PORT = process.env.POSTGRES_HOST_PORT ?? "5432";
 const REDIS_HOST_PORT = process.env.REDIS_HOST_PORT ?? "6379";
 const DATABASE_URL =
@@ -127,20 +127,20 @@ function newestMtime(dir) {
 }
 
 /** dist/main.js is stale when any source or config is newer than the build. */
-function authBuildStale() {
-  const main = join(AUTH_DIR, "dist", "main.js");
+function apiBuildStale() {
+  const main = join(API_DIR, "dist", "main.js");
   if (!existsSync(main)) return true;
   const built = statSync(main).mtimeMs;
   const configs = [
-    join(AUTH_DIR, "package.json"),
-    join(AUTH_DIR, "tsconfig.json"),
-    join(AUTH_DIR, "tsconfig.build.json"),
+    join(API_DIR, "package.json"),
+    join(API_DIR, "tsconfig.json"),
+    join(API_DIR, "tsconfig.build.json"),
   ]
     .filter(existsSync)
     .map((file) => statSync(file).mtimeMs);
   const newest = Math.max(
-    newestMtime(join(AUTH_DIR, "src")),
-    newestMtime(join(AUTH_DIR, "prisma")),
+    newestMtime(join(API_DIR, "src")),
+    newestMtime(join(API_DIR, "prisma")),
     ...configs,
   );
   return newest > built;
@@ -149,39 +149,39 @@ function authBuildStale() {
 function run(cmd, args) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
-    prefix(child, "auth:setup");
+    prefix(child, "api:setup");
     child.on("exit", (code) => resolve(code ?? 1));
     child.on("error", (error) => {
-      process.stderr.write(`[auth:setup] ${error.message}\n`);
+      process.stderr.write(`[api:setup] ${error.message}\n`);
       resolve(1);
     });
   });
 }
 
 /** First-run install + prisma generate + build (skipped when dist is fresh). */
-async function prepareAuth() {
-  if (!existsSync(join(AUTH_DIR, "node_modules"))) {
-    console.log("Installing account-service dependencies (auth/)…");
-    if ((await run("npm", ["ci", "--prefix", "auth"])) !== 0) return false;
+async function prepareApi() {
+  if (!existsSync(join(API_DIR, "node_modules"))) {
+    console.log("Installing Archlast Cine API dependencies (api/)…");
+    if ((await run("npm", ["ci", "--prefix", "api"])) !== 0) return false;
   }
-  const generated = join(AUTH_DIR, "node_modules", ".prisma", "client", "index.js");
-  const schema = join(AUTH_DIR, "prisma", "schema.prisma");
+  const generated = join(API_DIR, "node_modules", ".prisma", "client", "index.js");
+  const schema = join(API_DIR, "prisma", "schema.prisma");
   if (!existsSync(generated) || statSync(schema).mtimeMs > statSync(generated).mtimeMs) {
-    if ((await run("npm", ["run", "prisma:generate", "--prefix", "auth"])) !== 0) return false;
+    if ((await run("npm", ["run", "prisma:generate", "--prefix", "api"])) !== 0) return false;
   }
-  if (authBuildStale()) {
-    console.log("Building account service (auth/)…");
-    if ((await run("npm", ["run", "build", "--prefix", "auth"])) !== 0) return false;
+  if (apiBuildStale()) {
+    console.log("Building Archlast Cine API (api/)…");
+    if ((await run("npm", ["run", "build", "--prefix", "api"])) !== 0) return false;
   }
   return true;
 }
 
 /** Poll /v1/health until it answers or `timeoutMs` elapses. */
-async function waitForAuthHealth(timeoutMs) {
+async function waitForApiHealth(timeoutMs) {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     try {
-      const res = await fetch(`${AUTH_URL}/v1/health`, { signal: AbortSignal.timeout(3_000) });
+      const res = await fetch(`${API_URL}/v1/health`, { signal: AbortSignal.timeout(3_000) });
       if (res.ok) return await res.json();
     } catch {
       /* not up yet */
@@ -191,38 +191,38 @@ async function waitForAuthHealth(timeoutMs) {
   return null;
 }
 
-async function startAuth() {
-  if (!existsSync(AUTH_DIR)) return;
-  if (await portOpen(AUTH_PORT)) {
-    console.log(`Account service already listening on ${HOST}:${AUTH_PORT} — reusing it.`);
+async function startApi() {
+  if (!existsSync(API_DIR)) return;
+  if (await portOpen(API_PORT)) {
+    console.log(`Archlast Cine API already listening on ${HOST}:${API_PORT} — reusing it.`);
     return;
   }
-  if (!(await prepareAuth())) {
-    console.error("Account service unavailable (auth/ install or build failed) — continuing.");
+  if (!(await prepareApi())) {
+    console.error("Archlast Cine API unavailable (api/ install or build failed) — continuing.");
     return;
   }
 
-  const auth = spawn(process.execPath, [join(AUTH_DIR, "dist", "main.js")], {
+  const api = spawn(process.execPath, [join(API_DIR, "dist", "main.js")], {
     env: {
       ...process.env,
-      AUTH_HOST: process.env.AUTH_HOST ?? HOST,
-      AUTH_PORT: String(AUTH_PORT),
-      AUTH_SECRET: process.env.AUTH_SECRET ?? "moviebox-dev-secret",
+      API_HOST: process.env.API_HOST ?? HOST,
+      API_PORT: String(API_PORT),
+      JWT_SECRET: process.env.JWT_SECRET ?? "moviebox-dev-secret",
       DATABASE_URL,
       REDIS_URL,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  children.push(auth);
-  prefix(auth, "auth");
+  children.push(api);
+  prefix(api, "api");
 
-  const health = await waitForAuthHealth(120_000);
+  const health = await waitForApiHealth(120_000);
   if (health?.ok) {
-    console.log(`Account service ready on ${AUTH_URL} (db + redis ok).`);
+    console.log(`Archlast Cine API ready on ${API_URL} (db + redis ok).`);
     return;
   }
   console.error(
-    `Account service degraded (${health ? `db=${health.db} redis=${health.redis}` : "no response in 120s"}).`,
+    `Archlast Cine API degraded (${health ? `db=${health.db} redis=${health.redis}` : "no response in 120s"}).`,
   );
   console.error(`Start Postgres + Redis with: ${COMPOSE_HINT}`);
 }
@@ -264,16 +264,16 @@ async function main() {
     console.log("Backend ready.");
   }
 
-  await startAuth();
+  await startApi();
 
   const web = spawn("next", ["dev", "-p", String(WEB_PORT)], {
-    env: { ...process.env, MB_BACKEND_URL: BACKEND_URL, AUTH_URL },
+    env: { ...process.env, MB_BACKEND_URL: BACKEND_URL, API_URL },
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(web);
   prefix(web, "web");
   console.log(
-    `Web: http://localhost:${WEB_PORT} (backend: ${BACKEND_URL}, account: ${AUTH_URL})`,
+    `Web: http://localhost:${WEB_PORT} (backend: ${BACKEND_URL}, api: ${API_URL})`,
   );
 }
 

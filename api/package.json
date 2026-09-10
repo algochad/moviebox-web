@@ -1,8 +1,8 @@
 {
-  "name": "moviebox-account",
+  "name": "archlast-cine-api",
   "version": "0.1.0",
   "private": true,
-  "description": "NestJS account service: users, settings, watch history, my-list (Prisma+Postgres, Redis rate-limit/denylist)",
+  "description": "Archlast Cine account & user-data API (NestJS + Prisma + Postgres + Redis)",
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/main.js",

@@ -50,7 +50,7 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
         <p className="mono-meta text-[11px] font-bold tracking-[0.3em] text-brand">// SIGNAL LOST</p>
         <h1 className="text-2xl font-black tracking-tight text-zinc-50">Backend not reachable</h1>
         <p className="max-w-md text-sm leading-relaxed text-zinc-400">
-          {error ?? "The MovieBox Rust backend did not respond."} Start it with{" "}
+          {error ?? "The Archlast Cine Rust backend did not respond."} Start it with{" "}
           <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-zinc-300">npm run dev</code>{" "}
           (launches both servers) or{" "}
           <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-zinc-300">npm run backend</code>

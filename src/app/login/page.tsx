@@ -42,8 +42,8 @@ export default function LoginPage() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-[460px] flex-col justify-center px-5 pb-24 pt-28">
-      <p className="eyebrow">// Account</p>
-      <h1 className="display-title mt-3 text-4xl">Sign in</h1>
+      <p className="eyebrow">// Archlast Cine · Account</p>
+      <h1 className="display-title mt-3 text-4xl">Sign in to Archlast Cine</h1>
       <p className="mt-3 text-sm text-zinc-400">
         Your watch history and list follow you across devices.
       </p>

@@ -95,13 +95,13 @@ export function Nav() {
         <Link
           href="/"
           className="group flex shrink-0 items-center gap-2.5"
-          aria-label="MovieBox home"
+          aria-label="Archlast Cine home"
         >
           <span className="grid h-7 w-7 place-items-center rounded-md bg-brand shadow-[0_0_16px_rgba(34,197,94,0.35)] transition duration-150 group-hover:bg-brand-hover group-hover:shadow-[0_0_22px_rgba(74,222,128,0.55)]">
             <PlayIcon width={13} height={13} className="translate-x-px text-black" />
           </span>
           <span className="flex items-center font-display text-[17px] font-extrabold lowercase tracking-tight text-white">
-            moviebox
+            archlast<span className="text-brand">cine</span>
             <span aria-hidden="true" className="mb-0.5 ml-1 inline-block h-1.5 w-1.5 rounded-[2px] bg-brand" />
           </span>
         </Link>

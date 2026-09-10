@@ -61,8 +61,8 @@ export default function SignupPage() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-[460px] flex-col justify-center px-5 pb-24 pt-28">
-      <p className="eyebrow">// Account</p>
-      <h1 className="display-title mt-3 text-4xl">Join MovieBox</h1>
+      <p className="eyebrow">// Archlast Cine · Account</p>
+      <h1 className="display-title mt-3 text-4xl">Create your Archlast Cine account</h1>
       <p className="mt-3 text-sm text-zinc-400">
         One account syncs your list and watch progress everywhere.
       </p>

@@ -8,8 +8,8 @@ import { useMyList } from "@/lib/session";
 import type { CatalogItem } from "@/lib/types";
 
 const SCREENING_LABEL: Record<string, string> = {
-  series: "MOVIEBOX ORIGINAL · SERIES SCREENING",
-  movie: "MOVIEBOX ORIGINAL · FILM SCREENING",
+  series: "ARCHLAST CINE ORIGINAL · SERIES SCREENING",
+  movie: "ARCHLAST CINE ORIGINAL · FILM SCREENING",
 };
 
 function PlusIcon() {

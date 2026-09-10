@@ -12,7 +12,7 @@
 //! `MOVIEBOX_PROXY_BASE`; defaults to the request's Host /
 //! X-Forwarded-Proto headers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -1505,6 +1505,251 @@ async fn transcode_delete(
 }
 
 // ---------------------------------------------------------------------------
+// Local desktop history / favourites
+//
+// Read-only views over the TUI's own persistence files, so a signed-in account
+// can import what this machine watched. The files are read directly rather
+// than through `HistoryManager`/`FavoritesManager`, which rotate corrupt files
+// and re-save on load; every failure degrades to an empty 200 payload because
+// an importer must never be blocked by a missing or damaged local store.
+// ---------------------------------------------------------------------------
+
+/// Max rows handed to an importer; the desktop store itself is unbounded.
+const LOCAL_HISTORY_LIMIT: usize = 200;
+
+/// One row of the on-disk `watched` list. Current builds store only the
+/// completed-index keys (`provider::subject::season::episode`); older ones
+/// stored full entries, so both shapes must decode.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WatchedRow {
+    Entry(moviebox_tui::history::WatchHistoryItem),
+    Key(String),
+}
+
+#[derive(Default, Deserialize)]
+struct HistoryFile {
+    #[serde(default)]
+    watched: Vec<WatchedRow>,
+    #[serde(default)]
+    recent: Vec<moviebox_tui::history::WatchHistoryItem>,
+}
+
+#[derive(Default, Deserialize)]
+struct FavoritesFile {
+    #[serde(default)]
+    items: Vec<FavoriteRow>,
+}
+
+/// Tolerant mirror of `moviebox_tui::favorites::FavoriteItem`: `added_at` is
+/// optional so an older or hand-made file still yields usable items.
+#[derive(Deserialize)]
+struct FavoriteRow {
+    provider: String,
+    subject_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    cover_url: Option<String>,
+    #[serde(default)]
+    stype: i64,
+    #[serde(default)]
+    release_year: String,
+    #[serde(default)]
+    added_at: Option<u64>,
+}
+
+/// Mirrors the account contract's `WatchEntry` (src/lib/account.ts).
+#[derive(Serialize)]
+struct LocalWatchEntry {
+    provider: String,
+    id: String,
+    title: String,
+    poster: Option<String>,
+    #[serde(rename = "mediaType")]
+    media_type: &'static str,
+    year: Option<String>,
+    season: usize,
+    episode: usize,
+    /// Seconds watched.
+    position: f64,
+    /// Total duration in seconds; 0 when the client never recorded one.
+    duration: f64,
+    /// Unix ms of the last update.
+    #[serde(rename = "updatedAt")]
+    updated_at: u64,
+}
+
+/// Mirrors the account contract's `MyListItem`.
+#[derive(Serialize)]
+struct LocalFavoriteEntry {
+    provider: String,
+    id: String,
+    title: String,
+    poster: Option<String>,
+    #[serde(rename = "mediaType")]
+    media_type: &'static str,
+    year: Option<String>,
+    /// Unix ms the item was added.
+    #[serde(rename = "addedAt")]
+    added_at: u64,
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// `stype == 2` is a series in the provider taxonomy.
+fn media_type_of(stype: i64) -> &'static str {
+    if stype == 2 { "series" } else { "movie" }
+}
+
+/// Absent release years are `null` in the account contract, not `""`.
+fn year_of(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Canonical provider key, shared by the crate's history index and the web
+/// account contract; unknown providers pass through untouched.
+fn canon_provider(raw: &str) -> String {
+    ProviderKind::parse(raw)
+        .map(|kind| kind.cache_key().to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// Same identity the crate's `watched` index is keyed by.
+fn history_key(item: &moviebox_tui::history::WatchHistoryItem) -> String {
+    format!(
+        "{}::{}::{}::{}",
+        canon_provider(&item.provider),
+        item.subject_id,
+        item.season,
+        item.episode
+    )
+}
+
+/// Parse a JSON file, yielding `T::default()` when it is missing, unreadable
+/// or malformed.
+fn load_local_json<T: Default + serde::de::DeserializeOwned>(path: &Option<PathBuf>) -> T {
+    path.as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// The path the payload was read from (for transparency), or None when this
+/// machine has no such file yet.
+fn local_source(path: &Option<PathBuf>) -> Option<String> {
+    path.as_ref()
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+}
+
+async fn local_history() -> Json<serde_json::Value> {
+    let path = moviebox_tui::config::history_path();
+    let source = local_source(&path);
+    let file: HistoryFile = load_local_json(&path);
+
+    // `watched` is the completed index; its keys also mark the matching
+    // `recent` row as completed (the TUI does the same on load).
+    let mut rows: Vec<moviebox_tui::history::WatchHistoryItem> = Vec::new();
+    let mut completed: HashSet<String> = HashSet::new();
+    for row in file.watched {
+        match row {
+            WatchedRow::Entry(mut item) => {
+                item.completed = true;
+                rows.push(item);
+            }
+            WatchedRow::Key(key) => {
+                completed.insert(key);
+            }
+        }
+    }
+    rows.extend(file.recent);
+    rows.retain(|item| !item.completed && !completed.contains(&history_key(item)));
+
+    // Dedupe by (provider, id, season, episode), keeping the newest timestamp.
+    let mut newest: HashMap<
+        (String, String, usize, usize),
+        moviebox_tui::history::WatchHistoryItem,
+    > = HashMap::new();
+    for item in rows {
+        let key = (
+            canon_provider(&item.provider),
+            item.subject_id.clone(),
+            item.season,
+            item.episode,
+        );
+        let keep = match newest.get(&key) {
+            Some(prev) => item.timestamp >= prev.timestamp,
+            None => true,
+        };
+        if keep {
+            newest.insert(key, item);
+        }
+    }
+
+    let mut entries: Vec<LocalWatchEntry> = newest
+        .into_values()
+        .map(|item| LocalWatchEntry {
+            provider: canon_provider(&item.provider),
+            id: item.subject_id,
+            title: item.title,
+            poster: item.cover_url,
+            media_type: media_type_of(item.stype),
+            year: year_of(&item.release_year),
+            season: item.season,
+            episode: item.episode,
+            position: item.progress_seconds as f64,
+            duration: item.duration_seconds.unwrap_or(0) as f64,
+            updated_at: item.timestamp.saturating_mul(1000),
+        })
+        .collect();
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    entries.truncate(LOCAL_HISTORY_LIMIT);
+
+    Json(serde_json::json!({
+        "source": source,
+        "count": entries.len(),
+        "entries": entries,
+    }))
+}
+
+async fn local_favorites() -> Json<serde_json::Value> {
+    let path = moviebox_tui::config::favorites_path();
+    let source = local_source(&path);
+    let file: FavoritesFile = load_local_json(&path);
+    let now_ms = now_unix_secs().saturating_mul(1000);
+
+    let items: Vec<LocalFavoriteEntry> = file
+        .items
+        .into_iter()
+        .map(|item| LocalFavoriteEntry {
+            provider: canon_provider(&item.provider),
+            id: item.subject_id,
+            title: item.title,
+            poster: item.cover_url,
+            media_type: media_type_of(item.stype),
+            year: year_of(&item.release_year),
+            added_at: item
+                .added_at
+                .map(|ts| ts.saturating_mul(1000))
+                .unwrap_or(now_ms),
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "source": source,
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Ops
 // ---------------------------------------------------------------------------
 
@@ -1543,6 +1788,8 @@ async fn get_config() -> Json<serde_json::Value> {
             "cache_dir": moviebox_tui::config::cache_dir().display().to_string(),
             "addons": moviebox_tui::config::addons_path().map(|p| p.display().to_string()),
             "tv": moviebox_tui::config::tv_path().map(|p| p.display().to_string()),
+            "local_history_path": moviebox_tui::config::history_path().map(|p| p.display().to_string()),
+            "local_favorites_path": moviebox_tui::config::favorites_path().map(|p| p.display().to_string()),
         }
     }))
 }
@@ -1620,6 +1867,8 @@ async fn main() {
         )
         .route("/api/transcode/{session}", delete(transcode_delete))
         .route("/api/config", get(get_config))
+        .route("/api/local-history", get(local_history))
+        .route("/api/local-favorites", get(local_favorites))
         .with_state(state);
 
     let addr = format!("{host}:{port}");

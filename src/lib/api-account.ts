@@ -56,6 +56,14 @@ function query(params: Record<string, string | number | undefined>): string {
   return s ? `?${s}` : "";
 }
 
+/** Bulk upload of local/desktop history into the account; idempotent upsert. */
+export function importHistory(entries: WatchEntryInput[]): Promise<{ count: number }> {
+  return request<{ count: number }>("/history/import", {
+    method: "POST",
+    body: JSON.stringify({ entries }),
+  });
+}
+
 export const accountApi = {
   config: () => request<AccountConfig>("/config"),
 
@@ -81,8 +89,7 @@ export const accountApi = {
   recordHistory: async (entry: WatchEntryInput) =>
     (await request<{ entry: WatchEntry }>("/history", { method: "POST", body: JSON.stringify({ entry }) })).entry,
 
-  importHistory: (entries: WatchEntryInput[]) =>
-    request<{ count: number }>("/history/import", { method: "POST", body: JSON.stringify({ entries }) }),
+  importHistory,
 
   removeHistory: (provider: string, id: string, season?: number, episode?: number) =>
     request<void>(`/history${query({ provider, id, season, episode })}`, { method: "DELETE" }),

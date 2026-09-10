@@ -2,8 +2,8 @@
 # The Next build runs `npm ci` inside the image; host artifacts must not ship.
 .git
 node_modules
-auth/node_modules
-auth/dist
+api/node_modules
+api/dist
 .next
 out
 build

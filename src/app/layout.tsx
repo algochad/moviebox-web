@@ -24,11 +24,11 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "MovieBox — Stream cinema in the dark",
-    template: "%s · MovieBox",
+    default: "Archlast Cine — stream cinema in the dark",
+    template: "%s · Archlast Cine",
   },
   description:
-    "Self-hosted streaming platform: browse and watch movies and series through your own MovieBox backend.",
+    "Archlast Cine is a self-hosted streaming app: browse and watch movies and series through your own Rust media backend, with accounts that sync your list and watch progress across devices.",
   icons: {
     icon: [{ url: "/logo.svg", type: "image/svg+xml" }],
   },
@@ -53,7 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <footer className="mt-24 border-t border-line">
             <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-5 py-14 md:px-10">
               <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.28em] text-zinc-500">
-                <span className="text-brand">MovieBox</span>
+                <span className="text-brand">Archlast Cine</span>
                 <span className="mx-2 text-zinc-700">//</span>
                 <span className="text-zinc-400">Self-hosted streaming</span>
               </p>

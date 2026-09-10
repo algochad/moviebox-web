@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 /** Internal NestJS origin — the browser never talks to Nest directly. */
 export function authOrigin(): string {
-  return process.env.AUTH_URL ?? "http://127.0.0.1:4100";
+  return process.env.API_URL ?? "http://127.0.0.1:4100";
 }
 
 export const TOKEN_COOKIE = "mb_token";

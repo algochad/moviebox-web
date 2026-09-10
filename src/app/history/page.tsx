@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Cover } from "@/components/cover";
 import { PlayIcon, XIcon } from "@/components/icons";
 import type { WatchEntry } from "@/lib/account";
+import { accountApi, importHistory } from "@/lib/api-account";
 import { formatClock } from "@/lib/format";
 import { useServerHistory, useSession } from "@/lib/session";
 
@@ -19,6 +20,22 @@ function entryMeta(entry: WatchEntry): string {
       ? `S${String(entry.season).padStart(2, "0")}E${String(entry.episode).padStart(2, "0")}`
       : "Movie";
   return entry.year ? `${episode} · ${entry.year}` : episode;
+}
+
+/**
+ * Continue-watching rows the desktop client persists on this machine
+ * (Rust `GET /api/mb/local-history`, rewritten by next.config.ts). A missing or
+ * failing endpoint yields an empty list, which hides the import panel.
+ */
+async function fetchDesktopHistory(): Promise<WatchEntry[]> {
+  try {
+    const res = await fetch("/api/mb/local-history", { cache: "no-store" });
+    if (!res.ok) return [];
+    const payload = (await res.json()) as { entries?: WatchEntry[] };
+    return Array.isArray(payload.entries) ? payload.entries : [];
+  } catch {
+    return [];
+  }
 }
 
 function HistoryRow({ entry, onRemove }: { entry: WatchEntry; onRemove: () => void }) {
@@ -83,11 +100,72 @@ export default function HistoryPage() {
   const { status } = useSession();
   const { entries, ready, remove } = useServerHistory();
 
-  const sorted = useMemo(() => [...entries].sort((a, b) => b.updatedAt - a.updatedAt), [entries]);
+  // Desktop scan: one request per page load, shared across renders so a
+  // StrictMode remount reuses the in-flight promise instead of refetching.
+  const desktopRequest = useRef<Promise<WatchEntry[]> | null>(null);
+  const [desktopEntries, setDesktopEntries] = useState<WatchEntry[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  // The session store reloads history on sign-in only, so the authoritative
+  // read that follows an import is mirrored here for this page's lifetime.
+  const [importedEntries, setImportedEntries] = useState<WatchEntry[] | null>(null);
+
+  useEffect(() => {
+    if (status !== "authed") return;
+    let active = true;
+    const pending = desktopRequest.current ?? (desktopRequest.current = fetchDesktopHistory());
+    void pending.then((found) => {
+      if (active) setDesktopEntries(found);
+    });
+    return () => {
+      active = false;
+    };
+  }, [status]);
+
+  const source = status === "authed" && importedEntries ? importedEntries : entries;
+  const sorted = useMemo(() => [...source].sort((a, b) => b.updatedAt - a.updatedAt), [source]);
+
+  const importCount = desktopEntries.length;
+  const resumePoints = desktopEntries.filter((entry) => entry.position > 0).length;
+
+  const runImport = async () => {
+    setImporting(true);
+    setNotice(null);
+    try {
+      const { count } = await importHistory(desktopEntries);
+      setImported(true);
+      setNotice(`IMPORTED ${count} · ${resumePoints} RESUME POINTS`);
+      try {
+        setImportedEntries(await accountApi.history());
+      } catch (err) {
+        console.warn("[history] post-import refresh failed:", err);
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const removeEntry = (entry: WatchEntry) => {
+    void remove(entry.provider, entry.id, entry.season, entry.episode);
+    setImportedEntries((prev) =>
+      prev
+        ? prev.filter(
+            (row) =>
+              row.provider !== entry.provider ||
+              row.id !== entry.id ||
+              row.season !== entry.season ||
+              row.episode !== entry.episode,
+          )
+        : prev,
+    );
+  };
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 pb-28 pt-28 md:px-8">
-      <p className="eyebrow">// Account</p>
+      <p className="eyebrow">// Archlast Cine · Account</p>
       <div className="mt-3 flex flex-wrap items-end gap-x-5 gap-y-2">
         <h1 className="display-title text-4xl">History</h1>
         {ready && sorted.length > 0 && (
@@ -96,6 +174,45 @@ export default function HistoryPage() {
           </span>
         )}
       </div>
+
+      {status === "authed" && (
+        <p className="mt-3 text-sm text-zinc-400">
+          History is stored on your account and syncs across devices.
+        </p>
+      )}
+
+      {status === "authed" && importCount > 0 && (
+        <section className="glass-panel mt-6 rounded-lg p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-3">
+            <div className="min-w-0">
+              <p className="mono-meta text-[10px] font-bold uppercase tracking-[0.22em] text-brand">
+                Desktop library
+              </p>
+              <p className="mt-2 text-sm text-zinc-400">
+                Found {importCount} {importCount === 1 ? "title" : "titles"} from the Archlast Cine
+                desktop client on this machine.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void runImport()}
+              disabled={importing || imported}
+              className="btn-solid mono-meta gap-1.5 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {imported
+                ? "IMPORTED ✓"
+                : importing
+                  ? "IMPORTING…"
+                  : `IMPORT ${importCount} ${importCount === 1 ? "TITLE" : "TITLES"}`}
+            </button>
+          </div>
+          {notice && (
+            <p className="mono-meta mt-3 text-[11px] text-zinc-400" role="status" aria-live="polite">
+              {notice}
+            </p>
+          )}
+        </section>
+      )}
 
       {!ready ? (
         <div className="mt-10 space-y-3">
@@ -123,7 +240,7 @@ export default function HistoryPage() {
             <HistoryRow
               key={`${entry.provider}:${entry.id}:${entry.season}:${entry.episode}`}
               entry={entry}
-              onRemove={() => void remove(entry.provider, entry.id, entry.season, entry.episode)}
+              onRemove={() => removeEntry(entry)}
             />
           ))}
         </div>

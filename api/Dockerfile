@@ -23,7 +23,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production \
     PORT=4100 \
-    AUTH_HOST=0.0.0.0
+    API_HOST=0.0.0.0
 # node_modules is copied whole: it carries the generated Prisma client, the
 # query/schema engines, and the `prisma` CLI that the boot-time `db push` uses.
 COPY package.json package-lock.json ./

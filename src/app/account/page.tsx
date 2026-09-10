@@ -101,7 +101,7 @@ export default function AccountPage() {
   if (status !== "authed" || !user) {
     return (
       <div className="mx-auto flex min-h-screen w-full max-w-[460px] flex-col justify-center px-5 pb-24 pt-28 text-center">
-        <p className="eyebrow">// Account</p>
+        <p className="eyebrow">// Archlast Cine · Account</p>
         <h1 className="display-title mt-3 text-4xl">Sign in</h1>
         <p className="mt-3 text-sm text-zinc-400">
           Settings and sync live behind an account.
@@ -120,7 +120,7 @@ export default function AccountPage() {
 
   return (
     <div className="mx-auto w-full max-w-[720px] px-5 pb-28 pt-28 md:px-8">
-      <p className="eyebrow">// Account</p>
+      <p className="eyebrow">// Archlast Cine · Account</p>
       <h1 className="display-title mt-3 text-4xl">Settings</h1>
       <p className="mono-meta mt-2 text-[11px] text-zinc-500">{user.email}</p>
 

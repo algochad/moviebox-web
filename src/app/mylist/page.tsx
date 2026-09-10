@@ -25,7 +25,7 @@ export default function MyListPage() {
 
   return (
     <div className="mx-auto w-full max-w-[1560px] px-5 pb-28 pt-28 md:px-8 xl:px-12">
-      <p className="eyebrow">// Account</p>
+      <p className="eyebrow">// Archlast Cine · Account</p>
       <div className="mt-3 flex flex-wrap items-end gap-x-5 gap-y-2">
         <h1 className="display-title text-4xl">My List</h1>
         {ready && items.length > 0 && (

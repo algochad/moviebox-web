@@ -1,7 +1,7 @@
-# Local infrastructure for the MovieBox account service.
+# Local infrastructure for the Archlast Cine API.
 #
 #   docker compose up -d                 # postgres + redis only (dev default)
-#   docker compose --profile app up -d   # + auth (Nest, 4100) and web (3000)
+#   docker compose --profile app up -d   # + api (Nest, 4100) and web (3000)
 name: moviebox
 
 services:
@@ -39,15 +39,15 @@ services:
       retries: 20
 
   # Opt-in: docker compose --profile app up -d
-  auth:
+  api:
     profiles: ["app"]
-    build: ./auth
+    build: ./api
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://moviebox:moviebox@db:5432/moviebox
       REDIS_URL: redis://redis:6379
-      AUTH_SECRET: ${AUTH_SECRET:-moviebox-compose-dev-secret-change-me}
-      AUTH_HOST: 0.0.0.0
+      JWT_SECRET: ${JWT_SECRET:-moviebox-compose-dev-secret-change-me}
+      API_PORT: "4100"
       PORT: "4100"
     depends_on:
       db:
@@ -74,15 +74,15 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      # Mirrors the root Dockerfile defaults; AUTH_URL points at the service.
+      # Mirrors the root Dockerfile defaults; API_URL points at the service.
       MOVIEBOX_REGION: ph
       MOVIEBOX_SERVER_HOST: 127.0.0.1
       MOVIEBOX_SERVER_PORT: "9797"
       MB_BACKEND_URL: http://127.0.0.1:9797
-      AUTH_URL: http://auth:4100
+      API_URL: http://api:4100
       PORT: "3000"
     depends_on:
-      auth:
+      api:
         condition: service_healthy
     ports:
       - "3000:3000"
