@@ -77,6 +77,7 @@ async function main() {
         ...process.env,
         MOVIEBOX_SERVER_HOST: HOST,
         MOVIEBOX_SERVER_PORT: String(PORT),
+        MOVIEBOX_REGION: process.env.MOVIEBOX_REGION ?? "ph",
         MOVIEBOX_PROXY_BASE: process.env.MOVIEBOX_PROXY_BASE ?? `http://localhost:${WEB_PORT}`,
         RUST_LOG: process.env.RUST_LOG ?? "warn",
       },

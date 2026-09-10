@@ -1529,6 +1529,7 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "ok": true,
         "service": "moviebox-server",
         "version": env!("CARGO_PKG_VERSION"),
+        "region": moviebox_tui::config::moviebox_region(),
         "providers": providers,
     }))
 }

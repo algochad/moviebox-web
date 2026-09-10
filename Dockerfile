@@ -27,6 +27,7 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     MOVIEBOX_SERVER_HOST=127.0.0.1 \
     MOVIEBOX_SERVER_PORT=9797 \
+    MOVIEBOX_REGION=ph \
     MB_BACKEND_URL=http://127.0.0.1:9797
 # Override at run time with the externally visible origin, e.g.
 # MOVIEBOX_PROXY_BASE=https://movies.example.com
