@@ -1,0 +1,14 @@
+# Build-context hygiene for the root web image (`docker build .`).
+# The Next build runs `npm ci` inside the image; host artifacts must not ship.
+.git
+node_modules
+auth/node_modules
+auth/dist
+.next
+out
+build
+dist
+coverage
+*.log
+MovieBox-Tui/**/target
+MovieBox-Tui/**/book

@@ -1,14 +1,34 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { Cover } from "@/components/cover";
-import { InfoIcon, PlayIcon } from "@/components/icons";
+import { CheckIcon, InfoIcon, PlayIcon } from "@/components/icons";
+import { useMyList } from "@/lib/session";
 import type { CatalogItem } from "@/lib/types";
 
 const SCREENING_LABEL: Record<string, string> = {
   series: "MOVIEBOX ORIGINAL · SERIES SCREENING",
   movie: "MOVIEBOX ORIGINAL · FILM SCREENING",
 };
+
+function PlusIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      width={17}
+      height={17}
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
 
 export function Billboard({
   item,
@@ -21,6 +41,9 @@ export function Billboard({
   playing: boolean;
   onPlay: () => void;
 }) {
+  const myList = useMyList();
+  const [savingList, setSavingList] = useState(false);
+  const saved = myList.has(item.id.provider, item.id.value);
   const year = item.year ?? null;
   const rating = metrics?.rating != null ? metrics.rating : null;
   const trending = metrics?.trending != null ? metrics.trending : null;
@@ -96,6 +119,38 @@ export function Billboard({
               <InfoIcon width={15} height={15} />
               Details
             </Link>
+            <button
+              onClick={() => {
+                if (savingList) return;
+                setSavingList(true);
+                void myList
+                  .toggle({
+                    provider: item.id.provider,
+                    id: item.id.value,
+                    title: item.title,
+                    poster: item.poster_url,
+                    mediaType: item.media_type,
+                    year: item.year,
+                  })
+                  .catch(() => {
+                    /* anon/offline — leave the state untouched */
+                  })
+                  .finally(() => setSavingList(false));
+              }}
+              disabled={savingList}
+              aria-label={saved ? "Remove from My List" : "Add to My List"}
+              aria-pressed={saved}
+              title={saved ? "Remove from My List" : "Add to My List"}
+              className={`btn-glass h-11 w-11 items-center justify-center rounded-full p-0 ${
+                saved ? "bg-brand/15 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.45)]" : ""
+              }`}
+            >
+              {saved ? (
+                <CheckIcon width={17} height={17} className="text-brand" />
+              ) : (
+                <PlusIcon />
+              )}
+            </button>
           </div>
         </div>
       </div>

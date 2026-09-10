@@ -1,0 +1,92 @@
+# Local infrastructure for the MovieBox account service.
+#
+#   docker compose up -d                 # postgres + redis only (dev default)
+#   docker compose --profile app up -d   # + auth (Nest, 4100) and web (3000)
+name: moviebox
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: moviebox
+      POSTGRES_PASSWORD: moviebox
+      POSTGRES_DB: moviebox
+    ports:
+      # Default matches the documented local URL; override POSTGRES_HOST_PORT
+      # when 5432 is already taken on the host.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moviebox -d moviebox"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      # Override REDIS_HOST_PORT when 6379 is already taken on the host.
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Opt-in: docker compose --profile app up -d
+  auth:
+    profiles: ["app"]
+    build: ./auth
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://moviebox:moviebox@db:5432/moviebox
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET:-moviebox-compose-dev-secret-change-me}
+      AUTH_HOST: 0.0.0.0
+      PORT: "4100"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "4100:4100"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4100/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    environment:
+      # Mirrors the root Dockerfile defaults; AUTH_URL points at the service.
+      MOVIEBOX_REGION: ph
+      MOVIEBOX_SERVER_HOST: 127.0.0.1
+      MOVIEBOX_SERVER_PORT: "9797"
+      MB_BACKEND_URL: http://127.0.0.1:9797
+      AUTH_URL: http://auth:4100
+      PORT: "3000"
+    depends_on:
+      auth:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  redisdata:

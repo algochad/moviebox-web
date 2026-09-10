@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Cover } from "@/components/cover";
-import { ChevronDown, InfoIcon, PlayIcon } from "@/components/icons";
+import { CheckIcon, ChevronDown, PlayIcon } from "@/components/icons";
+import { useMyList } from "@/lib/session";
 import { formatRuntime } from "@/lib/format";
 import type { MediaDetails, ProviderId, Season } from "@/lib/types";
 
@@ -14,8 +15,29 @@ function catalogTag(provider: ProviderId, value: string): string {
   return `${prefix}-${trimmed}`;
 }
 
+function PlusIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      width={15}
+      height={15}
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
 export function TitleDetail({ details }: { details: MediaDetails }) {
+  const myList = useMyList();
+  const [savingList, setSavingList] = useState(false);
   const [seasonIdx, setSeasonIdx] = useState(0);
+  const saved = myList.has(details.id.provider, details.id.value);
   const seasons = details.seasons;
   const activeSeason: Season | null = seasons[seasonIdx] ?? null;
   const isSeries = details.media_type === "series" || seasons.length > 0;
@@ -119,9 +141,38 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
                 <PlayIcon width={15} height={15} className="translate-x-px" />
                 {isSeries ? "Start Series" : "Play"}
               </Link>
-              <button className="btn-glass mono-meta px-5 py-3 text-[13px] font-semibold uppercase tracking-[0.14em]">
-                <InfoIcon width={15} height={15} />
-                Details
+              <button
+                onClick={() => {
+                  if (savingList) return;
+                  setSavingList(true);
+                  void myList
+                    .toggle({
+                      provider: details.id.provider,
+                      id: details.id.value,
+                      title: details.title,
+                      poster: details.poster_url,
+                      mediaType: details.media_type,
+                      year: details.year,
+                    })
+                    .catch(() => {
+                      /* anon/offline — leave the state untouched */
+                    })
+                    .finally(() => setSavingList(false));
+                }}
+                disabled={savingList}
+                aria-label={saved ? "Remove from My List" : "Add to My List"}
+                aria-pressed={saved}
+                title={saved ? "Remove from My List" : "Add to My List"}
+                className={`btn-glass mono-meta px-5 py-3 text-[13px] font-semibold uppercase tracking-[0.14em] ${
+                  saved ? "bg-brand/15 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.45)]" : ""
+                }`}
+              >
+                {saved ? (
+                  <CheckIcon width={15} height={15} className="text-brand" />
+                ) : (
+                  <PlusIcon />
+                )}
+                {saved ? "In My List" : "Add to My List"}
               </button>
             </div>
 

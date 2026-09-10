@@ -151,7 +151,7 @@ export function TitleRow({
         )}
         <div
           ref={trackRef}
-          className="scrollbar-none flex gap-3 overflow-x-auto scroll-smooth pb-1"
+          className="scrollbar-none flex gap-3 overflow-x-auto scroll-smooth pb-2 pt-6"
           role="list"
         >
           {items.map((item, i) => (

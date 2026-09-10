@@ -17,5 +17,5 @@
     "paths": { "@/*": ["./src/*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "MovieBox-Tui"]
+  "exclude": ["node_modules", "MovieBox-Tui", "auth", ".next"]
 }

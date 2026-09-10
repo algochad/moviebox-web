@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Billboard } from "@/components/billboard";
 import { PlayIcon } from "@/components/icons";
 import { TitleRow } from "@/components/title-row";
-import { getHistory, WatchEntry } from "@/lib/history";
+import { getHistory } from "@/lib/history";
+import { mergeEntries } from "@/lib/history-merge";
+import { useServerHistory } from "@/lib/session";
+import type { WatchEntry } from "@/lib/account";
 import { buildMetricRows, buildTypeRows, metricOf, pickHero } from "@/lib/rows";
 import type { BrowseMetrics, CatalogItem } from "@/lib/types";
 
@@ -15,17 +18,31 @@ interface FeedProps {
   error: string | null;
 }
 
+/** A row is "done" once the player has passed ~98% of a known duration. */
+function unfinished(entries: WatchEntry[]): WatchEntry[] {
+  return entries.filter((e) => !(e.duration > 0 && e.position / e.duration > 0.98));
+}
+
 export function HomeFeed({ feed, metrics, error }: FeedProps) {
-  const [history, setHistory] = useState<WatchEntry[]>([]);
-  const [ready, setReady] = useState(false);
+  const server = useServerHistory();
+  const [local, setLocal] = useState<WatchEntry[]>([]);
+  const [localReady, setLocalReady] = useState(false);
 
   useEffect(() => {
-    const all = getHistory().filter(
-      (e) => !(e.duration > 0 && e.position / e.duration > 0.98),
+    // Anonymous / offline history mirrored into the account shape (updatedAt).
+    setLocal(
+      getHistory().map((e): WatchEntry => ({ ...e, updatedAt: e.updated })),
     );
-    setHistory(all);
-    setReady(true);
+    setLocalReady(true);
   }, []);
+
+  // Server history is canonical when signed in; local rows fill whatever the
+  // server has not seen yet (pre-login / just-recorded progress).
+  const history = useMemo(
+    () => unfinished(mergeEntries(server.entries, local)),
+    [server.entries, local],
+  );
+  const ready = localReady && server.ready;
 
   if (error || !feed) {
     return (

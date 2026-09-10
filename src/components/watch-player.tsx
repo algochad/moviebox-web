@@ -18,10 +18,12 @@ import {
   type SubtitleTrackState,
 } from "@/lib/captions";
 import { formatClock } from "@/lib/format";
-import { clearProgress, entryKey, getHistory, saveProgress } from "@/lib/history";
+import { getHistory } from "@/lib/history";
 import { parseMpdDuration, pickPlayableManifest, rewriteRelativeTo } from "@/lib/playback";
+import { useMyList, useServerHistory, useSession } from "@/lib/session";
 import type { MediaDetails, Release, StreamsResponse, SubtitleOption } from "@/lib/types";
 import { ApiError } from "@/lib/types";
+import { recordWatch, removeWatch, setWatchSyncTransport } from "@/lib/watch-sync";
 import { ArrowLeft, CheckIcon, FullscreenIcon, FullscreenExitIcon, PlayIcon, Spinner, VolumeIcon, VolumeMuteIcon } from "@/components/icons";
 
 type Provider = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix";
@@ -46,6 +48,10 @@ function delay(ms: number): Promise<void> {
 
 export function WatchPlayer({ provider, id, season, episode }: Props) {
   const router = useRouter();
+  // account session: drives server-side progress sync + the My List toggle
+  const { status } = useSession();
+  const myList = useMyList();
+  const serverHistory = useServerHistory();
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const dashRef = useRef<dashjs.MediaPlayerClass | null>(null);
@@ -116,12 +122,26 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const endedRef = useRef(false);
   // true while the user is dragging the seek bar (rAF must not fight the thumb)
   const draggingRef = useRef(false);
-  const keyRef = useRef<string>("");
   const subTrackRef = useRef<SubtitleTrackState | null>(null);
   const chosenSubRef = useRef<SubtitleOption | null>(null);
   const remoteSeekBusyRef = useRef(false);
   // media-session seekto + resume route through the absolute seek dispatcher
   const seekAbsoluteRef = useRef<(absSeconds: number) => void>(() => undefined);
+
+  // ---- account session -------------------------------------------------
+  // Mirrors the (async) session status so callbacks bound to a single render
+  // (rAF loop, media events, unmount cleanup) always see the current auth
+  // state. Flipping to anon mid-watch simply degrades to local-only writes.
+  const authedRef = useRef(false);
+  // End-of-title cleanup, callable from the empty-deps rAF loop.
+  const removeWatchRef = useRef<() => void>(() => undefined);
+  // Server half of the progress bridge. The provider's record/remove are
+  // stable callbacks, held in refs so the transport can be bound once while
+  // still exercising the latest session state.
+  const serverRecordRef = useRef(serverHistory.record);
+  serverRecordRef.current = serverHistory.record;
+  const serverRemoveRef = useRef(serverHistory.remove);
+  serverRemoveRef.current = serverHistory.remove;
 
   const setTranscodeActive = useCallback((active: boolean) => {
     transcodeActiveRef.current = active;
@@ -131,8 +151,22 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const label = loaded
     ? `${loaded.details.title}${loaded.details.media_type === "series" && season > 0 ? ` · S${season} E${episode}` : ""}`
     : "Loading…";
-  const key = entryKey(provider, id, season, episode);
-  keyRef.current = key;
+  const authed = status === "authed";
+  authedRef.current = authed;
+  // "watched to the end" cleanup: local row always, server row when signed in
+  removeWatchRef.current = () => removeWatch(provider, id, season, episode, authedRef.current);
+
+  // Bridge progress writes into the account store for the player's lifetime.
+  // Bound once — the provider's record/remove are stable callbacks — so no
+  // effect re-subscribes as the account cache updates.
+  useEffect(() => {
+    setWatchSyncTransport({
+      record: (patch) => void serverRecordRef.current(patch),
+      remove: (entryProvider, entryId, entrySeason, entryEpisode) =>
+        void serverRemoveRef.current(entryProvider, entryId, entrySeason, entryEpisode),
+    });
+    return () => setWatchSyncTransport(null);
+  }, []);
 
   /** Absolute content position in seconds (transcode path maps the live window onto the true source timeline). */
   const absolutePosition = useCallback((): number => {
@@ -156,24 +190,36 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     return Number.isFinite(d) && d > 0 ? d : 0;
   }, []);
 
-  const saveNow = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || endedRef.current) return;
-    const dur = absoluteDuration();
-    if (dur <= 0) return;
-    saveProgress(key, {
-      provider,
-      id,
-      title: loaded?.details.title ?? label.replace(/ · S\d+ E\d+$/, ""),
-      poster: loaded?.details.poster_url ?? null,
-      mediaType: loaded?.details.media_type ?? (season > 0 ? "series" : "movie"),
-      year: loaded?.details.year ?? null,
-      season,
-      episode,
-      position: absolutePosition(),
-      duration: dur,
-    });
-  }, [key, provider, id, season, episode, loaded, label, absolutePosition, absoluteDuration]);
+  /**
+   * Snapshot current progress. Always written locally; when a session is
+   * active the server upsert rides along (throttled unless `flush`, which the
+   * pause / unmount paths use). Never blocks or fails playback.
+   */
+  const saveNow = useCallback(
+    (flush = false) => {
+      const video = videoRef.current;
+      if (!video || endedRef.current) return;
+      const dur = absoluteDuration();
+      if (dur <= 0) return;
+      recordWatch(
+        {
+          provider,
+          id,
+          title: loaded?.details.title ?? label.replace(/ · S\d+ E\d+$/, ""),
+          poster: loaded?.details.poster_url ?? null,
+          mediaType: loaded?.details.media_type ?? (season > 0 ? "series" : "movie"),
+          year: loaded?.details.year ?? null,
+          season,
+          episode,
+          position: absolutePosition(),
+          duration: dur,
+        },
+        authedRef.current,
+        flush,
+      );
+    },
+    [provider, id, season, episode, loaded, label, absolutePosition, absoluteDuration],
+  );
 
   // ---------------- media session (OS media keys + lock screen) ----------------
   const setupMediaSession = useCallback(() => {
@@ -662,8 +708,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   useEffect(() => {
     void boot();
     return () => {
+      // Capture + flush the last position *before* the source is torn down
+      // (teardown resets the media element, so a saveNow afterwards would see
+      // no duration). Signed-in sessions get a final forced server upsert.
+      saveNowRef.current?.(true);
       teardown();
-      saveNowRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boot]);
@@ -681,10 +730,26 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   }, []);
 
   // ---------------- resume prompt ----------------
+  // Resume source of record. Signed in: the account history snapshot (the
+  // provider fetches it once per session) wins, local rows fill gaps.
+  // Anonymous: the local store, exactly as before — no network.
   useEffect(() => {
     if (resumePromptedRef.current) return;
     if (state !== "ready" && state !== "playing" && state !== "paused") return;
-    const entry = getHistory().find((h) => entryKey(h.provider, h.id, h.season, h.episode) === key);
+    // The session settles async: wait for it (and its history snapshot) so a
+    // signed-in account entry is never missed in favour of the local row.
+    if (status === "loading" || !serverHistory.ready) return;
+    // Same title identity as the local store key: provider + id + season + episode.
+    const local = getHistory().find(
+      (h) => h.provider === provider && h.id === id && h.season === season && h.episode === episode,
+    );
+    const server = serverHistory.entries.find(
+      (h) => h.provider === provider && h.id === id && h.season === season && h.episode === episode,
+    );
+    const entry =
+      status === "authed" && server
+        ? { position: server.position, duration: server.duration, updated: server.updatedAt }
+        : local;
     // Only offer to resume progress that predates this session: entries this
     // run keeps saving every ~10s and must never re-prompt mid-watch.
     if (
@@ -697,7 +762,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       resumePromptedRef.current = true;
       setResumeAsk({ position: entry.position });
     }
-  }, [state, key]);
+  }, [state, status, provider, id, season, episode, serverHistory.ready, serverHistory.entries]);
 
   const resume = (fromStart: boolean) => {
     const video = videoRef.current;
@@ -777,6 +842,20 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
     else void el.requestFullscreen().catch(() => undefined);
   }, []);
+
+  /** Add/remove the title being watched from the account My List. */
+  const toggleMyList = useCallback(() => {
+    const details = loaded?.details;
+    if (!details) return;
+    void myList.toggle({
+      provider,
+      id,
+      title: details.title,
+      poster: details.poster_url,
+      mediaType: details.media_type,
+      year: details.year,
+    });
+  }, [loaded, myList, provider, id]);
 
   const onVolume = (v: number) => {
     const video = videoRef.current;
@@ -1056,7 +1135,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
             absTime >= total - 1.5
           ) {
             endedRef.current = true;
-            clearProgress(keyRef.current);
+            removeWatchRef.current();
             const next = maybeNextEpisodeRef.current();
             if (next) showNextUpRef.current({ ...next });
             else {
@@ -1141,13 +1220,13 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       playingRef.current = false;
       setState("paused");
       setControls(true);
-      saveNow();
+      saveNow(true); // explicit pause flushes the server upsert
     };
     const onEnded = () => {
       playingRef.current = false;
       if (endedRef.current) return; // already handled by the transcode natural-end path
       endedRef.current = true;
-      clearProgress(key);
+      removeWatch(provider, id, season, episode, authedRef.current);
       const next = maybeNextEpisode();
       if (next) {
         showNextUp({ ...next });
@@ -1209,7 +1288,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       document.removeEventListener("fullscreenchange", onFsChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pokeControls, saveNow, maybeNextEpisode, key, showNextUp]);
+  }, [pokeControls, saveNow, maybeNextEpisode, provider, id, season, episode, showNextUp]);
 
   // ---------------- watchdog: DASH "playing but black" fallback ----------------
   // Some browsers partially advertise HEVC support and then never decode a
@@ -1245,6 +1324,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   };
 
   const showSpinner = state === "loading";
+  const inMyList = myList.ready && myList.has(provider, id);
   return (
     <div
       ref={containerRef}
@@ -1278,6 +1358,35 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         >
           <ArrowLeft width={20} height={20} />
         </button>
+        {authed && myList.ready && loaded && (
+          <button
+            onClick={toggleMyList}
+            aria-label={inMyList ? "Remove from My List" : "Add to My List"}
+            aria-pressed={inMyList}
+            className={`mono-meta flex h-11 shrink-0 items-center gap-2 rounded-full px-4 text-xs font-bold tracking-[0.15em] ring-1 backdrop-blur transition ${
+              inMyList
+                ? "bg-brand/20 text-brand ring-brand/50 hover:bg-brand/30"
+                : "bg-black/50 text-white ring-white/20 hover:bg-black/80"
+            }`}
+          >
+            {inMyList ? (
+              <CheckIcon width={16} height={16} />
+            ) : (
+              <svg
+                viewBox="0 0 24 24"
+                width={16}
+                height={16}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            )}
+            <span>MY LIST</span>
+          </button>
+        )}
         <div className="min-w-0">
           <h1 className="truncate text-lg font-bold text-white md:text-xl">{label}</h1>
           <p className="flex items-center gap-2 text-xs text-zinc-400">
