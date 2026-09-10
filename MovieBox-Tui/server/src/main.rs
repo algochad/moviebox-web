@@ -28,7 +28,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use tokio::io::AsyncBufReadExt;
 
-use moviebox_tui::providers::{ProviderError, ProviderKind, Release, ReleaseProvider};
+use moviebox_tui::providers::{CatalogItem, ProviderError, ProviderKind, Release, ReleaseProvider};
 use moviebox_tui::service::MovieBoxService;
 use serde::{Deserialize, Serialize};
 
@@ -369,6 +369,186 @@ async fn suggest(State(state): State<AppState>, Query(p): Query<SuggestParams>) 
         Ok(suggestions) => Json(serde_json::json!({ "query": p.q, "suggestions": suggestions }))
             .into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unified cross-provider search + seasonal anime
+// ---------------------------------------------------------------------------
+
+/// Max items one provider contributes to a unified search.
+const UNIFIED_PER_PROVIDER: usize = 20;
+/// Max items in a unified search response.
+const UNIFIED_TOTAL: usize = 50;
+
+#[derive(Deserialize)]
+struct UnifiedSearchParams {
+    q: String,
+}
+
+/// Simple relevance score for merged results: exact title match ranks highest,
+/// then prefix, then substring. The per-provider order (already sorted by the
+/// upstream engines) breaks ties via stable sort.
+fn relevance_score(query: &str, item: &CatalogItem) -> i32 {
+    let title = item.title.to_lowercase();
+    let q = query.to_lowercase();
+    if title == q {
+        3
+    } else if title.starts_with(&q) {
+        2
+    } else if title.contains(&q) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Search every enabled metadata provider in parallel and merge the results
+/// into one relevance-ranked list. A provider that errors (unavailable,
+/// rate-limited) degrades to zero items recorded under `errors`; the response
+/// itself never fails because one source is down.
+async fn search_unified(
+    State(state): State<AppState>,
+    Query(p): Query<UnifiedSearchParams>,
+) -> Response {
+    let q = p.q.trim().to_string();
+    if q.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "missing query");
+    }
+
+    let providers = [
+        ProviderKind::MovieBox,
+        ProviderKind::FourKHdHub,
+        ProviderKind::Anime,
+    ];
+    let mut set = tokio::task::JoinSet::new();
+    for provider in providers {
+        let svc = state.svc.clone();
+        let query = q.clone();
+        set.spawn(async move {
+            match svc.search_typed(provider, &query, 1).await {
+                Ok(items) => Ok((provider, items)),
+                Err(e) => Err((provider, e)),
+            }
+        });
+    }
+
+    let mut merged: Vec<(ProviderKind, CatalogItem)> = Vec::new();
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok((provider, items))) => {
+                for item in items.into_iter().take(UNIFIED_PER_PROVIDER) {
+                    merged.push((provider, item));
+                }
+            }
+            Ok(Err((provider, e))) => {
+                errors.push(serde_json::json!({ "provider": provider, "error": e }));
+            }
+            Err(e) => errors.push(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    merged.sort_by(|a, b| {
+        relevance_score(&q, &b.1).cmp(&relevance_score(&q, &a.1))
+    });
+    merged.truncate(UNIFIED_TOTAL);
+
+    let items: Vec<serde_json::Value> = merged
+        .into_iter()
+        .map(|(provider, item)| {
+            let mut value = serde_json::to_value(item).unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = &mut value {
+                map.insert("provider".to_string(), serde_json::json!(provider));
+            }
+            value
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "query": q,
+        "items": items,
+        "errors": errors,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct SeasonalParams {
+    season: String,
+    year: i64,
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+async fn anime_seasonal(
+    State(state): State<AppState>,
+    Query(p): Query<SeasonalParams>,
+) -> Response {
+    let page = p.page.unwrap_or(1);
+    match state.svc.anime_client.seasonal(&p.season, p.year, page).await {
+        Ok(items) => Json(serde_json::json!({
+            "season": p.season.to_lowercase(),
+            "year": p.year,
+            "page": page,
+            "items": items,
+        }))
+        .into_response(),
+        Err(e) => provider_err_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct AnimeBrowseParams {
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+async fn anime_trending(
+    State(state): State<AppState>,
+    Query(p): Query<AnimeBrowseParams>,
+) -> Response {
+    let page = p.page.unwrap_or(1);
+    match state.svc.anime_client.browse("TRENDING_DESC", None, page).await {
+        Ok(items) => Json(serde_json::json!({
+            "sort": "trending",
+            "page": page,
+            "items": items,
+        }))
+        .into_response(),
+        Err(e) => provider_err_response(e),
+    }
+}
+
+async fn anime_popular(
+    State(state): State<AppState>,
+    Query(p): Query<AnimeBrowseParams>,
+) -> Response {
+    let page = p.page.unwrap_or(1);
+    match state.svc.anime_client.browse("POPULARITY_DESC", None, page).await {
+        Ok(items) => Json(serde_json::json!({
+            "sort": "popular",
+            "page": page,
+            "items": items,
+        }))
+        .into_response(),
+        Err(e) => provider_err_response(e),
+    }
+}
+
+async fn anime_recent(
+    State(state): State<AppState>,
+    Query(p): Query<AnimeBrowseParams>,
+) -> Response {
+    let page = p.page.unwrap_or(1);
+    match state.svc.anime_client.browse("START_DATE_DESC", Some("RELEASING"), page).await {
+        Ok(items) => Json(serde_json::json!({
+            "sort": "recent",
+            "page": page,
+            "items": items,
+        }))
+        .into_response(),
+        Err(e) => provider_err_response(e),
     }
 }
 
@@ -1846,6 +2026,11 @@ async fn main() {
         .route("/api/health", get(health))
         .route("/api/home", get(home))
         .route("/api/search", get(search))
+        .route("/api/search/unified", get(search_unified))
+        .route("/api/anime/seasonal", get(anime_seasonal))
+        .route("/api/anime/trending", get(anime_trending))
+        .route("/api/anime/popular", get(anime_popular))
+        .route("/api/anime/recent", get(anime_recent))
         .route("/api/suggest", get(suggest))
         .route("/api/details", get(details))
         .route("/api/streams", get(streams))

@@ -33,7 +33,7 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
   // server-rendered movie/series feed.
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/mb/home?provider=anime")
+    fetch("/api/mb/anime/trending")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: HomeResponse) => {
         if (!cancelled) setAnimeItems(data.items ?? []);

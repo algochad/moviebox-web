@@ -60,6 +60,19 @@ export interface MediaDetails {
   genres: string[];
   seasons: Season[];
   dubs: Dub[];
+  /** Anime-specific metadata; present only when the provider supplies it. */
+  anime?: AnimeDetailsBlock | null;
+}
+
+export interface AnimeDetailsBlock {
+  /** Production studios. */
+  studios?: string[];
+  /** Broadcast season (WINTER/SPRING/SUMMER/FALL). */
+  season?: string | null;
+  /** Broadcast year. */
+  season_year?: number | null;
+  /** AniList airing status (RELEASING/FINISHED/NOT_YET_RELEASED/CANCELLED/HIATUS). */
+  status?: string | null;
 }
 
 export interface SourceMirror {

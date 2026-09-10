@@ -93,6 +93,62 @@ pub fn md5_hex(value: &str) -> String {
     }
     safe_query
 }
+// ---------------------------------------------------------------------------
+// Redis cache backend
+// ---------------------------------------------------------------------------
+
+/// Redis URL to connect to; overridden via the `REDIS_URL` env var.
+const REDIS_DEFAULT_URL: &str = "redis://127.0.0.1:6379";
+
+/// Async Redis cache backend for provider responses.
+///
+/// Values are stored as JSON strings with a per-write TTL. All failures
+/// degrade silently: `get` yields `None` and `set` no-ops, so callers can
+/// fall back to the filesystem cache without special-casing an
+/// unreachable Redis.
+#[derive(Clone)]
+pub struct RedisCache {
+    connection: redis::aio::MultiplexedConnection,
+}
+
+impl RedisCache {
+    /// Connect to Redis via `REDIS_URL` (default `redis://127.0.0.1:6379`).
+    /// Returns `None` when the server is unreachable so callers can
+    /// degrade to the filesystem cache.
+    pub async fn connect() -> Option<Self> {
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| REDIS_DEFAULT_URL.to_string());
+        let client = redis::Client::open(url.as_str()).ok()?;
+        let connection = client.get_multiplexed_tokio_connection().await.ok()?;
+        Some(Self { connection })
+    }
+
+    /// Fetch a JSON-encoded value by key. `None` on miss, decode error
+    /// or connection failure.
+    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let mut conn = self.connection.clone();
+        let raw: Option<String> = redis::cmd("GET")
+            .arg(key)
+            .query_async(&mut conn)
+            .await
+            .ok()?;
+        serde_json::from_str(&raw?).ok()
+    }
+
+    /// Store a JSON-encoded value with a TTL in seconds. Silently
+    /// no-ops on connection or encoding failure.
+    pub async fn set<T: Serialize>(&self, key: &str, ttl_secs: u64, value: &T) {
+        let Ok(payload) = serde_json::to_string(value) else {
+            return;
+        };
+        let mut conn = self.connection.clone();
+        let _: Result<(), redis::RedisError> = redis::cmd("SETEX")
+            .arg(key)
+            .arg(ttl_secs)
+            .arg(payload)
+            .query_async(&mut conn)
+            .await;
+    }
+}
 
 pub fn atomic_write_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {

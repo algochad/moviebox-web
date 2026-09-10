@@ -10,7 +10,7 @@ import type { MediaDetails, ProviderId, Season } from "@/lib/types";
 
 function catalogTag(provider: ProviderId, value: string): string {
   const prefix =
-    provider === "moviebox" ? "MB" : provider === "fourkhdhub" ? "4K" : "CT";
+    provider === "moviebox" ? "MB" : provider === "fourkhdhub" ? "4K" : provider === "anime" ? "AL" : "CT";
   const trimmed = value.replace(/^mb-|^4k-|^bdix[-_]/i, "");
   return `${prefix}-${trimmed}`;
 }
@@ -40,22 +40,39 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
   const saved = myList.has(details.id.provider, details.id.value);
   const seasons = details.seasons;
   const activeSeason: Season | null = seasons[seasonIdx] ?? null;
+  const isAnime = details.media_type === "anime";
   const isSeries = details.media_type === "series" || seasons.length > 0;
   const runtime = formatRuntime(details.duration);
   const episodeCount = seasons.reduce((n, s) => n + s.episodes.length, 0);
+  const anime = details.anime ?? null;
+  const animeSeasonText =
+    anime && anime.season && anime.season_year != null
+      ? `${anime.season.charAt(0)}${anime.season.slice(1).toLowerCase()} ${anime.season_year}`
+      : details.tagline && isAnime
+        ? details.tagline
+        : null;
+  const animeStatusText = anime?.status ? animeStatusLabel(anime.status) : null;
+  const animeStudios =
+    anime && anime.studios && anime.studios.length > 0
+      ? anime.studios.join(", ")
+      : details.director && isAnime
+        ? details.director
+        : null;
 
   const watchHref = (season: number, episode: number) =>
     `/watch/${details.id.provider}/${details.id.value}${
-      isSeries ? `?s=${season}&e=${episode}` : ""
+      isSeries || isAnime ? `?s=${season}&e=${episode}` : ""
     }`;
 
-  const startHref = watchHref(activeSeason?.number ?? 0, activeSeason?.episodes[0]?.number ?? 0);
+  const startHref = watchHref(activeSeason?.number ?? 1, activeSeason?.episodes[0]?.number ?? 1);
 
   const metaStrip: string[] = [];
   if (details.imdb_rating) metaStrip.push(`${details.imdb_rating}★`);
-  if (details.year) metaStrip.push(details.year);
-  if (runtime) metaStrip.push(runtime);
-  if (isSeries && episodeCount > 0) metaStrip.push(`${episodeCount} EPS`);
+  if (isAnime && animeStatusText) metaStrip.push(animeStatusText);
+  if (isAnime && animeSeasonText) metaStrip.push(animeSeasonText);
+  if (details.year && !(isAnime && animeSeasonText)) metaStrip.push(details.year);
+  if (!isAnime && runtime) metaStrip.push(runtime);
+  if ((isSeries || isAnime) && episodeCount > 0) metaStrip.push(`${episodeCount} EPS`);
 
   return (
     <div className="pb-28">
@@ -86,14 +103,14 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
             </div>
             <p className="mono-meta mt-2.5 flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-zinc-500">
               <span>{catalogTag(details.id.provider, details.id.value)}</span>
-              <span className="text-zinc-600">{isSeries ? "SERIES" : "FILM"}</span>
+              <span className="text-zinc-600">{isAnime ? "ANIME" : isSeries ? "SERIES" : "FILM"}</span>
             </p>
           </div>
 
           {/* Info column */}
           <div className="animate-fade-up min-w-0 flex-1 space-y-5">
             <p className="eyebrow">
-              {providerLabel(details.id.provider)} · {isSeries ? "Series" : "Film"}
+              {providerLabel(details.id.provider)} · {isAnime ? "Anime" : isSeries ? "Series" : "Film"}
             </p>
 
             <h1 className="display-title text-balance text-[clamp(2.2rem,5vw,4.6rem)]">
@@ -122,7 +139,7 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
               </div>
             )}
 
-            {details.tagline && (
+            {details.tagline && !(isAnime && animeSeasonText === details.tagline) && (
               <p className="border-l-2 border-brand/50 pl-3 text-sm italic leading-relaxed text-zinc-400">
                 “{details.tagline}”
               </p>
@@ -139,7 +156,7 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
                 className="btn-solid mono-meta px-7 py-3 text-[13px] font-bold uppercase tracking-[0.14em]"
               >
                 <PlayIcon width={15} height={15} className="translate-x-px" />
-                {isSeries ? "Start Series" : "Play"}
+                {isAnime ? "Start Watching" : isSeries ? "Start Series" : "Play"}
               </Link>
               <button
                 onClick={() => {
@@ -176,10 +193,40 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
               </button>
             </div>
 
-            {/* Cast / director — mono definition rows under a hairline */}
-            {(details.director || details.stars) && (
+            {/* Definition rows — mono, under a hairline */}
+            {(details.director || details.stars || animeStudios || animeSeasonText || animeStatusText) && (
               <dl className="space-y-2.5 border-t border-line pt-4">
-                {details.director && (
+                {animeStudios && (
+                  <div className="flex gap-5">
+                    <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Studio
+                    </dt>
+                    <dd className="min-w-0 text-[13px] leading-relaxed text-zinc-300">
+                      {animeStudios}
+                    </dd>
+                  </div>
+                )}
+                {isAnime && animeSeasonText && (
+                  <div className="flex gap-5">
+                    <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Season
+                    </dt>
+                    <dd className="min-w-0 text-[13px] leading-relaxed text-zinc-300">
+                      {animeSeasonText}
+                    </dd>
+                  </div>
+                )}
+                {animeStatusText && (
+                  <div className="flex gap-5">
+                    <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Status
+                    </dt>
+                    <dd className="min-w-0 text-[13px] leading-relaxed text-zinc-300">
+                      {animeStatusText}
+                    </dd>
+                  </div>
+                )}
+                {!isAnime && details.director && (
                   <div className="flex gap-5">
                     <dt className="mono-meta w-20 shrink-0 pt-px text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
                       Director
@@ -213,7 +260,7 @@ export function TitleDetail({ details }: { details: MediaDetails }) {
               <div>
                 <p className="eyebrow mb-1.5 flex items-center gap-2">
                   <span className="h-px w-5 bg-brand" />
-                  Season Track
+                  {isAnime ? "Episode Track" : "Season Track"}
                 </p>
                 <h2 className="text-2xl font-black tracking-tight text-zinc-50">Episodes</h2>
               </div>
@@ -292,6 +339,22 @@ function ChevronRightSmall() {
     </svg>
   );
 }
+function animeStatusLabel(status: string): string {
+  switch (status.toUpperCase()) {
+    case "RELEASING":
+      return "Currently Airing";
+    case "FINISHED":
+      return "Finished";
+    case "NOT_YET_RELEASED":
+      return "Not Yet Aired";
+    case "CANCELLED":
+      return "Cancelled";
+    case "HIATUS":
+      return "On Hiatus";
+    default:
+      return status;
+  }
+}
 
 function providerLabel(p: ProviderId): string {
   switch (p) {
@@ -303,6 +366,8 @@ function providerLabel(p: ProviderId): string {
       return "BDIX CircleFTP";
     case "bdix_dhakaflix":
       return "BDIX DhakaFlix";
+    case "anime":
+      return "AniList";
     default:
       return "Addon";
   }
