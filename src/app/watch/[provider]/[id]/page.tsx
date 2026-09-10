@@ -1,4 +1,4 @@
-import { WatchPlayer } from "@/components/watch-player";
+import { WatchClient, type WatchPlayerProvider } from "./watch-client";
 import { notFound } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ export default async function WatchPage({
   const episode = Number.parseInt(sp.e ?? "", 10);
 
   return (
-    <WatchPlayer
+    <WatchClient
       provider={provider as WatchPlayerProvider}
       id={id}
       season={Number.isFinite(season) ? season : 0}
@@ -34,8 +34,3 @@ export default async function WatchPage({
   );
 }
 
-export type WatchPlayerProvider =
-  | "moviebox"
-  | "fourkhdhub"
-  | "bdix_circleftp"
-  | "bdix_dhakaflix";

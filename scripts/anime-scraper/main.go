@@ -302,15 +302,32 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// corsMiddleware adds Access-Control-Allow-Origin headers to all responses
+// and handles OPTIONS preflight requests. Required for hls.js to fetch
+// stream segments directly from the sidecar when the master playlist
+// contains absolute URLs.
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func main() {
 	port := os.Getenv("SCRAPER_PORT")
 	if port == "" {
 		port = "9798"
 	}
 
-	http.HandleFunc("/resolve", handleResolve)
-	http.HandleFunc("/search", handleSearch)
-	http.HandleFunc("/health", handleHealth)
+	http.HandleFunc("/resolve", corsMiddleware(handleResolve))
+	http.HandleFunc("/search", corsMiddleware(handleSearch))
+	http.HandleFunc("/health", corsMiddleware(handleHealth))
 
 	addr := "127.0.0.1:" + port
 	log.Printf("Anime scraper sidecar (curd providers) listening on http://%s", addr)

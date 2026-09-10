@@ -55,7 +55,7 @@ func getVibeProxy() (*vibeProxy, error) {
 
 	proxy := &vibeProxy{sessions: map[string]*vibeSession{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/stream/", proxy.handle)
+	mux.HandleFunc("/stream/", corsWrap(proxy.handle))
 	server := &http.Server{Handler: mux}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -71,6 +71,23 @@ func getVibeProxy() (*vibeProxy, error) {
 
 	vibeProxyServer = proxy
 	return proxy, nil
+}
+
+// corsWrap adds Access-Control-Allow-Origin headers to all responses
+// and handles OPTIONS preflight requests. Required for hls.js to fetch
+// stream segments directly from the vibe-proxy when the master playlist
+// contains absolute URLs to this server.
+func corsWrap(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (p *vibeProxy) register(masterURL, referer string) (string, error) {

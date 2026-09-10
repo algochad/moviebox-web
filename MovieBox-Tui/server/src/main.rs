@@ -805,13 +805,18 @@ async fn proxy_fetch_inner(
         Err(e) => return api_error(StatusCode::BAD_GATEWAY, format!("upstream error: {e}")),
     };
     let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let is_manifest = status.is_success()
         && (upstream.ends_with(".mpd")
-            || resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|t| t.contains("dash+xml")));
+            || upstream.ends_with(".m3u8")
+            || content_type.contains("dash+xml")
+            || content_type.contains("mpegurl")
+            || content_type.contains("vnd.apple.mpegurl"));
 
     let mut out = HeaderMap::new();
     const PASS: [&str; 6] = [
@@ -846,9 +851,15 @@ async fn proxy_fetch_inner(
             state.proxy_base.trim_end_matches('/')
         );
         let text = String::from_utf8_lossy(&bytes).replace(&t.origin, &base);
+        // Preserve original content-type for HLS, override for DASH if missing
+        let final_content_type = if content_type.contains("mpegurl") || content_type.contains("vnd.apple.mpegurl") {
+            content_type.to_string()
+        } else {
+            "application/dash+xml".to_string()
+        };
         out.insert(
             axum::http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/dash+xml"),
+            HeaderValue::from_str(&final_content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")),
         );
         out.insert(
             axum::http::header::CONTENT_LENGTH,

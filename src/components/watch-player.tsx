@@ -455,8 +455,6 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       if (!video) return;
       transcodeIndexUrlRef.current = indexUrl;
       const startPlayback = () => {
-        // Chrome drops TextTrack cue matching across source (re)starts;
-        // re-apply captions (cheap — no-op unless a track is chosen).
         reapplyCaptions();
         window.setTimeout(() => {
           reapplyCaptions();
@@ -475,13 +473,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         });
         hls.on(Hls.Events.MANIFEST_PARSED, startPlayback);
         hls.on(Hls.Events.LEVEL_UPDATED, () => {
-          // the live playlist grew/slid — keep the caption matcher honest
           ensureActiveCues(video, subTrackRef.current);
         });
         hls.loadSource(indexUrl);
         hls.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        // native HLS (Safari without MSE)
         const onMeta = () => {
           reapplyCaptions();
           video.removeEventListener("loadedmetadata", onMeta);
@@ -660,11 +656,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           return;
         }
       } else {
-        // Detect HLS streams (.m3u8) and use hls.js instead of native video tag
-        // Native HLS only works in Safari; Firefox/Chrome need hls.js
         const isHls = source.endsWith(".m3u8") || source.includes(".m3u8?");
         if (isHls) {
-          playHls(source);
+          void playHls(source);
         } else {
           video.src = source;
           video.load();
@@ -675,7 +669,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       reapplyCaptions();
       setState("ready");
     },
-    [provider, id, season, episode, teardown, reapplyCaptions, startTranscode],
+    [provider, id, season, episode, teardown, reapplyCaptions, startTranscode, playHls],
   );
 
   // ---------------- initial load ----------------
