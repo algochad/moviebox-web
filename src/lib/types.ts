@@ -1,14 +1,14 @@
 // Typed mirror of the Rust backend's JSON contract
 // (moviebox_tui::providers::models + server responses).
 
-export type ProviderId = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix" | "addons";
+export type ProviderId = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix" | "addons" | "anime";
 
 export interface ProviderRef {
   provider: ProviderId;
   value: string;
 }
 
-export type MediaType = "movie" | "series";
+export type MediaType = "movie" | "series" | "anime";
 
 export interface CatalogItem {
   id: ProviderRef;

@@ -4,6 +4,13 @@
 // httpOnly `mb_token` cookie. Media items are mirror-images of the provider
 // CatalogItem/MediaDetails so lists can render without extra fetches.
 
+import type { MediaType } from "@/lib/media-types";
+
+// Re-export the unified media model union ("movie" | "series" | "anime").
+// Persisted account entries can now carry any of the three media types,
+// including anime, since the anime subsystem writes entries.
+export type { MediaType };
+
 export type RegionId = "ph" | "us" | "in" | "sg";
 
 export interface AccountUser {
@@ -30,7 +37,8 @@ export interface WatchEntry {
   id: string;
   title: string;
   poster: string | null;
-  mediaType: "movie" | "series";
+  /** Aligns with the unified MediaType ("movie" | "series" | "anime"). */
+  mediaType: MediaType;
   year: string | null;
   season: number;
   episode: number;
@@ -47,7 +55,8 @@ export interface MyListItem {
   id: string;
   title: string;
   poster: string | null;
-  mediaType: "movie" | "series";
+  /** Aligns with the unified MediaType ("movie" | "series" | "anime"). */
+  mediaType: MediaType;
   year: string | null;
   addedAt: number;
 }

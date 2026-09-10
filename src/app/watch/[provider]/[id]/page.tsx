@@ -8,6 +8,7 @@ const VALID: Record<string, true> = {
   fourkhdhub: true,
   bdix_circleftp: true,
   bdix_dhakaflix: true,
+  anime: true,
 };
 
 export default async function WatchPage({

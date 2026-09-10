@@ -232,7 +232,7 @@ fn provider_of(raw: &str) -> Result<ProviderKind, Response> {
     ProviderKind::parse(raw).ok_or_else(|| {
         api_error(
             StatusCode::BAD_REQUEST,
-            format!("unknown provider: {raw} (expected moviebox, fourkhdhub, bdix_circleftp, bdix_dhakaflix or addons)"),
+            format!("unknown provider: {raw} (expected moviebox, fourkhdhub, bdix_circleftp, bdix_dhakaflix, addons or anime)"),
         )
     })
 }
@@ -433,6 +433,7 @@ async fn fetch_releases(
         ProviderKind::Addons => Err(ProviderError::Unavailable(
             "addon stream resolution is not part of this API yet".to_string(),
         )),
+        ProviderKind::Anime => ReleaseProvider::episode_streams(&svc.anime_client, id, season, episode).await,
     }
 }
 
@@ -1760,6 +1761,7 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         ProviderKind::BdixCircleFtp,
         ProviderKind::BdixDhakaFlix,
         ProviderKind::Addons,
+        ProviderKind::Anime,
     ]
     .into_iter()
     .map(|kind| {

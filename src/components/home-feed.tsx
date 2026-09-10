@@ -10,7 +10,7 @@ import { mergeEntries } from "@/lib/history-merge";
 import { useServerHistory } from "@/lib/session";
 import type { WatchEntry } from "@/lib/account";
 import { buildMetricRows, buildTypeRows, metricOf, pickHero } from "@/lib/rows";
-import type { BrowseMetrics, CatalogItem } from "@/lib/types";
+import type { BrowseMetrics, CatalogItem, HomeResponse } from "@/lib/types";
 
 interface FeedProps {
   feed: CatalogItem[] | null;
@@ -27,6 +27,22 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
   const server = useServerHistory();
   const [local, setLocal] = useState<WatchEntry[]>([]);
   const [localReady, setLocalReady] = useState(false);
+  const [animeItems, setAnimeItems] = useState<CatalogItem[]>([]);
+
+  // Trending Anime row: fetched from the anime provider alongside the
+  // server-rendered movie/series feed.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/mb/home?provider=anime")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data: HomeResponse) => {
+        if (!cancelled) setAnimeItems(data.items ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Anonymous / offline history mirrored into the account shape (updatedAt).
@@ -133,6 +149,14 @@ export function HomeFeed({ feed, metrics, error }: FeedProps) {
             index={metricRows.length + i + 1 + (hasContinue ? 1 : 0)}
           />
         ))}
+        {animeItems.length > 0 && (
+          <TitleRow
+            key="trending-anime"
+            label="Trending Anime"
+            items={animeItems}
+            index={metricRows.length + typeRows.length + 1 + (hasContinue ? 1 : 0)}
+          />
+        )}
       </div>
     </div>
   );

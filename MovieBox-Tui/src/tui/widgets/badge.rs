@@ -153,6 +153,7 @@ pub fn provider_origin_tag(provider: ProviderKind) -> &'static str {
         ProviderKind::BdixCircleFtp => "[CircleFTP]",
         ProviderKind::BdixDhakaFlix => "[DhakaFlix]",
         ProviderKind::Addons => "[Addon]",
+        ProviderKind::Anime => "[Anime]",
     }
 }
 
@@ -174,6 +175,7 @@ pub fn provider_badge_span<'a>(
             ProviderKind::BdixCircleFtp => theme.teal,
             ProviderKind::BdixDhakaFlix => theme.sapphire,
             ProviderKind::Addons => theme.accent,
+            ProviderKind::Anime => theme.rosewater,
         };
         Span::styled(tag, style)
     }

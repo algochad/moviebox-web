@@ -1136,6 +1136,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState, theme: &Theme) 
                             "DhakaFlix".to_string()
                         }
                         crate::providers::models::ProviderKind::Addons => "Addon".to_string(),
+                        crate::providers::models::ProviderKind::Anime => "AniList".to_string(),
                     }
                 };
                 let is_ultra_compact = streams_area.width < 58;

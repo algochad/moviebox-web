@@ -26,7 +26,7 @@ import { ApiError } from "@/lib/types";
 import { recordWatch, removeWatch, setWatchSyncTransport } from "@/lib/watch-sync";
 import { ArrowLeft, CheckIcon, FullscreenIcon, FullscreenExitIcon, PlayIcon, Spinner, VolumeIcon, VolumeMuteIcon } from "@/components/icons";
 
-type Provider = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix";
+type Provider = "moviebox" | "fourkhdhub" | "bdix_circleftp" | "bdix_dhakaflix" | "anime";
 
 interface Props {
   provider: Provider;

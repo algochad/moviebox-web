@@ -1,3 +1,4 @@
+import type { MediaType } from "@/lib/media-types";
 // Account session + data hooks contract — implemented by the auth agent.
 // Consumed by nav / hover cards / detail / watch pages. All network calls go
 // through /api/account/* (Next route handlers proxy to the Nest backend and
@@ -28,7 +29,7 @@ export interface MyListState {
     id: string;
     title: string;
     poster: string | null;
-    mediaType: "movie" | "series";
+    mediaType: MediaType;
     year: string | null;
   }) => Promise<void>;
   has: (provider: string, id: string) => boolean;
@@ -40,12 +41,12 @@ export interface HistoryApi {
     id: string;
     title: string;
     poster: string | null;
-    mediaType: "movie" | "series";
-    year: string | null;
+    mediaType: MediaType;
     season: number;
     episode: number;
     position: number;
     duration: number;
+    year: string | null;
   }) => Promise<void>;
   remove: (provider: string, id: string, season?: number, episode?: number) => Promise<void>;
 }

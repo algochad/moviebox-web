@@ -14,14 +14,17 @@ pub enum ProviderKind {
     BdixDhakaFlix,
     #[serde(rename = "addons", alias = "addon")]
     Addons,
+    #[serde(rename = "anime", alias = "anilist")]
+    Anime,
 }
 
 impl ProviderKind {
-    pub const ENABLED: [Self; 4] = [
+    pub const ENABLED: [Self; 5] = [
         Self::MovieBox,
         Self::FourKHdHub,
         Self::BdixCircleFtp,
         Self::BdixDhakaFlix,
+        Self::Anime,
     ];
 
     pub const fn cache_key(self) -> &'static str {
@@ -31,6 +34,7 @@ impl ProviderKind {
             Self::BdixCircleFtp => "bdix_circleftp",
             Self::BdixDhakaFlix => "bdix_dhakaflix",
             Self::Addons => "addons",
+            Self::Anime => "anime",
         }
     }
 
@@ -41,6 +45,7 @@ impl ProviderKind {
             Self::BdixCircleFtp => "CircleFTP (BDIX)",
             Self::BdixDhakaFlix => "DhakaFlix (BDIX)",
             Self::Addons => "Addons",
+            Self::Anime => "Anime",
         }
     }
 
@@ -51,6 +56,7 @@ impl ProviderKind {
             "bdix_circleftp" | "circleftp (bdix)" => Some(Self::BdixCircleFtp),
             "bdix_dhakaflix" | "dhakaflix (bdix)" => Some(Self::BdixDhakaFlix),
             "addons" | "addon" => Some(Self::Addons),
+            "anime" | "anilist" => Some(Self::Anime),
             _ => None,
         }
     }
@@ -83,6 +89,7 @@ pub struct RequestContext {
 pub enum MediaType {
     Movie,
     Series,
+    Anime,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -258,6 +265,7 @@ impl Release {
                 ProviderKind::BdixDhakaFlix => "DhakaFlix",
                 ProviderKind::Addons => "Addon",
                 ProviderKind::MovieBox => "Direct",
+                ProviderKind::Anime => "AniList",
             })
     }
 

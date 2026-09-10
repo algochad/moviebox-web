@@ -6,7 +6,7 @@ export type RegionId = (typeof REGION_IDS)[number];
 export const PROVIDER_IDS = ['moviebox', 'fourkhdhub'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-export const MEDIA_TYPES = ['movie', 'series'] as const;
+export const MEDIA_TYPES = ['movie', 'series', 'anime'] as const;
 export type MediaType = (typeof MEDIA_TYPES)[number];
 
 export interface AccountUser {

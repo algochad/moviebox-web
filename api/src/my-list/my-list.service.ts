@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import type { MyListItem } from '../common/account.types';
+import type { MediaType, MyListItem } from '../common/account.types';
 import { PrismaService } from '../prisma/prisma.service';
 import type { MyListItemDto, MyListKeyQueryDto } from './dto/my-list.dto';
 
@@ -19,7 +19,7 @@ function toMyListItem(row: MyListRow): MyListItem {
     id: row.mediaId,
     title: row.title,
     poster: row.poster,
-    mediaType: row.mediaType === 'series' ? 'series' : 'movie',
+    mediaType: row.mediaType as MediaType,
     year: row.year,
     // BigInt ms -> number (safe: < 2^53).
     addedAt: Number(row.addedAt),
