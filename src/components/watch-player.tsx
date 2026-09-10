@@ -660,9 +660,16 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           return;
         }
       } else {
-        video.src = source;
-        video.load();
-        void video.play().catch(() => undefined);
+        // Detect HLS streams (.m3u8) and use hls.js instead of native video tag
+        // Native HLS only works in Safari; Firefox/Chrome need hls.js
+        const isHls = source.endsWith(".m3u8") || source.includes(".m3u8?");
+        if (isHls) {
+          playHls(source);
+        } else {
+          video.src = source;
+          video.load();
+          void video.play().catch(() => undefined);
+        }
       }
 
       reapplyCaptions();
