@@ -63,6 +63,8 @@ urlencoding = "2.1.3"
 regex = "1.10"
 hex = "0.4"
 ring = "0.17"
+aes = "0.8"
+ctr = "0.9"
 
 [lib]
 name = "moviebox_tui"
