@@ -1,35 +1,41 @@
-# Local infrastructure for the Archlast Cine API.
+# Archlast Cine — Coolify / production Docker Compose
 #
-#   docker compose up -d                 # postgres + redis only (dev default)
-#   docker compose --profile app up -d   # + api (Nest, 4100) and web (3000)
-name: moviebox
+# Usage in Coolify:
+#   1. Add a new "Docker Compose" application pointing at this repository.
+#   2. Coolify auto-detects this file; set the environment variables below
+#      (JWT_SECRET, POSTGRES_PASSWORD, MOVIEBOX_PROXY_BASE) via the UI or
+#      an .env file next to this compose file.
+#   3. Expose only the `web` service through Coolify's domain/TLS proxy;
+#      `api`, `db` and `redis` stay internal to the compose network.
+#
+# Local dev still works with plain `docker compose up -d`.
+name: archlast-cine
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: moviebox
-      POSTGRES_PASSWORD: moviebox
-      POSTGRES_DB: moviebox
-    ports:
-      # Default matches the documented local URL; override POSTGRES_HOST_PORT
-      # when 5432 is already taken on the host.
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-archlast}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Coolify or .env}
+      POSTGRES_DB: ${POSTGRES_DB:-archlast_cine}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U moviebox -d moviebox"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-archlast} -d $${POSTGRES_DB:-archlast_cine}"]
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 10s
+    # No host port: Coolify keeps databases internal. Override locally with
+    # POSTGRES_HOST_PORT=5432 if you need direct access.
+    ports:
+      - "${POSTGRES_HOST_PORT:-}:5432"
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      # Override REDIS_HOST_PORT when 6379 is already taken on the host.
-      - "${REDIS_HOST_PORT:-6379}:6379"
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
       - redisdata:/data
     healthcheck:
@@ -37,25 +43,27 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 5s
+    ports:
+      - "${REDIS_HOST_PORT:-}:6379"
 
-  # Opt-in: docker compose --profile app up -d
   api:
-    profiles: ["app"]
     build: ./api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://moviebox:moviebox@db:5432/moviebox
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-archlast}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-archlast_cine}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-moviebox-compose-dev-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in Coolify or .env}
       API_PORT: "4100"
       PORT: "4100"
+      API_HOST: "0.0.0.0"
+      PRISMA_AUTO_PUSH: "1"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "4100:4100"
     healthcheck:
       test:
         [
@@ -67,25 +75,41 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 20s
+      start_period: 30s
+    # Internal only — web reaches it as http://api:4100. Expose via
+    # API_HOST_PORT=4100 locally if you want direct access.
+    ports:
+      - "${API_HOST_PORT:-}:4100"
 
   web:
-    profiles: ["app"]
     build: .
     restart: unless-stopped
     environment:
-      # Mirrors the root Dockerfile defaults; API_URL points at the service.
-      MOVIEBOX_REGION: ph
-      MOVIEBOX_SERVER_HOST: 127.0.0.1
-      MOVIEBOX_SERVER_PORT: "9797"
-      MB_BACKEND_URL: http://127.0.0.1:9797
-      API_URL: http://api:4100
+      NODE_ENV: production
       PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      # Rust backend runs INSIDE the web container (see scripts/docker-entrypoint.sh).
+      MOVIEBOX_REGION: ${MOVIEBOX_REGION:-ph}
+      MOVIEBOX_SERVER_HOST: "127.0.0.1"
+      MOVIEBOX_SERVER_PORT: "9797"
+      MB_BACKEND_URL: "http://127.0.0.1:9797"
+      # External origin browsers use for DASH/HLS manifests behind Coolify's
+      # reverse proxy. Set to your public domain, e.g. https://cine.example.com
+      MOVIEBOX_PROXY_BASE: ${MOVIEBOX_PROXY_BASE:-}
+      # Nest account API — internal compose DNS; never exposed publicly.
+      API_URL: "http://api:4100"
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # The ONLY service Coolify should expose via domain/TLS.
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
 
 volumes:
   pgdata:
