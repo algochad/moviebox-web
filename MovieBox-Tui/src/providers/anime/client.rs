@@ -6,6 +6,14 @@ use crate::providers::models::{
     ProviderError, ProviderKind, ProviderMediaId, Release, Season,
 };
 use crate::providers::ProviderCapabilities;
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use sha2::{Sha256, Digest};
+use base64::{Engine as _, engine::general_purpose};
+
+
+const ALLANIME_CRYPTO_ENDPOINT: &str = "https://www.allanime.day";
+const ALLANIME_API_ENDPOINT: &str = "https://api.allanime.day/api";
+const ALLANIME_QUERY_HASH: &str = "f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0";
 
 const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
@@ -119,9 +127,10 @@ query($id: String!) {
     description
     genres
     season
-    year
+    status
     availableEpisodesDetail
     studios
+    episodeCount
   }
 }
 "#;
@@ -182,13 +191,23 @@ struct AllAnimeCard {
     #[serde(default)]
     genres: Option<Vec<String>>,
     #[serde(default)]
-    season: Option<String>,
+    season: Option<serde_json::Value>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    available_episodes_detail: Option<serde_json::Value>,
+    #[serde(default)]
+    studios: Option<Vec<String>>,
+    #[serde(default)]
+    episode_count: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AllAnimeSeason {
     #[serde(default)]
     year: Option<i64>,
     #[serde(default)]
-    available_episodes_detail: Option<AllAnimeEpisodes>,
-    #[serde(default)]
-    studios: Option<Vec<String>>,
+    quarter: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -518,7 +537,9 @@ impl AnimeProvider {
     fn allanime_episodes_count(card: &AllAnimeCard) -> usize {
         card.available_episodes_detail
             .as_ref()
-            .map(|ep| ep.sub.len().max(ep.dub.len()))
+            .and_then(|v| v.get("sub"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.len())
             .unwrap_or(0)
     }
 
@@ -552,7 +573,7 @@ impl AnimeProvider {
             id: Self::allanime_media_id(card),
             title: Self::allanime_pick_title(card),
             media_type: MediaType::Anime,
-            year: card.year.map(|y| y.to_string()),
+            year: card.season.as_ref().and_then(|s| s.get("year")).and_then(|v| v.as_i64()).map(|y| y.to_string()),
             poster_url: card.thumbnail.clone().or_else(|| card.banner.clone()),
             season_count: if Self::allanime_episodes_count(card) > 1 {
                 Some(1)
@@ -575,11 +596,12 @@ impl AnimeProvider {
             id: Self::allanime_media_id(card),
             title: Self::allanime_pick_title(card),
             media_type: MediaType::Anime,
-            year: card.year.map(|y| y.to_string()),
+            year: card.season.as_ref().and_then(|s| s.get("year")).and_then(|v| v.as_i64()).map(|y| y.to_string()),
             description: Self::clean_description(card.description.clone()),
-            tagline: card.season.clone().map(|season| {
-                let year = card.year.map(|y| format!(" {y}")).unwrap_or_default();
-                format!("{season}{year}")
+            tagline: card.season.as_ref().map(|s| {
+                let quarter = s.get("quarter").and_then(|v| v.as_str()).unwrap_or("");
+                let year = s.get("year").and_then(|v| v.as_i64()).map(|y| format!(" {y}")).unwrap_or_default();
+                format!("{quarter}{year}")
             }),
             imdb_rating: None,
             director,
@@ -593,6 +615,115 @@ impl AnimeProvider {
             dubs: Vec::<AudioTrackOption>::new(),
         }
     }
+
+    async fn fetch_allanime_crypto_keys(&self) -> Result<(Vec<u8>, i64), ProviderError> {
+        let html = self.http.get(ALLANIME_CRYPTO_ENDPOINT)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send().await
+            .map_err(|e| ProviderError::Network(e.to_string()))?
+            .text().await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let epoch_re = regex::Regex::new(r#""epoch":(\d+)"#).unwrap();
+        let epoch: i64 = epoch_re.captures(&html)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok())
+            .ok_or_else(|| ProviderError::Parsing("Failed to extract epoch".to_string()))?;
+
+        let partb_re = regex::Regex::new(r#""partB":"([^"]+)"#).unwrap();
+        let partb_b64 = partb_re.captures(&html)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .ok_or_else(|| ProviderError::Parsing("Failed to extract partB".to_string()))?;
+
+        let partb_bytes = general_purpose::STANDARD.decode(partb_b64)
+            .map_err(|_| ProviderError::Parsing("Failed to decode partB".to_string()))?;
+
+        let app_js_re = regex::Regex::new(r#"src="(/_app/immutable/entry/app\.[^"]+\.js)""#).unwrap();
+        let app_js_path = app_js_re.captures(&html)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .ok_or_else(|| ProviderError::Parsing("Failed to find app.js".to_string()))?;
+        
+        let app_js_url = format!("{}{}", ALLANIME_CRYPTO_ENDPOINT, app_js_path);
+        let app_js_content = self.http.get(&app_js_url)
+            .header("User-Agent", "Mozilla/5.0")
+            .send().await
+            .map_err(|e| ProviderError::Network(e.to_string()))?
+            .text().await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let chunk_re = regex::Regex::new(r#"\.\./chunks/([A-Za-z0-9_.-]+\.js)"#).unwrap();
+        let chunks: Vec<String> = chunk_re.captures_iter(&app_js_content)
+            .take(5)
+            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .collect();
+
+        let mut mask_hex = String::new();
+        for chunk in chunks {
+            let chunk_url = format!("{}/_app/immutable/chunks/{}", ALLANIME_CRYPTO_ENDPOINT, chunk);
+            if let Ok(resp) = self.http.get(&chunk_url).header("User-Agent", "Mozilla/5.0").send().await {
+                if let Ok(text) = resp.text().await {
+                    if let Some(cap) = regex::Regex::new(r"[0-9a-f]{64}").unwrap().find(&text) {
+                        mask_hex = cap.as_str().to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if mask_hex.is_empty() {
+            return Err(ProviderError::Parsing("Failed to extract mask".to_string()));
+        }
+
+        let mask_bytes = hex::decode(&mask_hex)
+            .map_err(|_| ProviderError::Parsing("Failed to decode mask".to_string()))?;
+
+        let mut key_bytes = vec![0u8; 32];
+        for i in 0..32.min(mask_bytes.len()).min(partb_bytes.len()) {
+            key_bytes[i] = mask_bytes[i] ^ partb_bytes[i];
+        }
+
+        Ok((key_bytes, epoch))
+    }
+
+    fn compute_aa_req(&self, key: &[u8], epoch: i64, query_hash: &str) -> Result<String, ProviderError> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let ts = (now_secs / 300) * 300 * 1000;
+        
+        let nonce_input = format!("{}:{}:{}", epoch, query_hash, ts);
+        let mut hasher = Sha256::new();
+        hasher.update(nonce_input.as_bytes());
+        let nonce_hash = hasher.finalize();
+        let nonce_bytes = &nonce_hash[0..12];
+
+        let payload = serde_json::json!({
+            "v": 1,
+            "ts": ts,
+            "epoch": epoch,
+            "qh": query_hash
+        });
+        let payload_str = serde_json::to_string(&payload).unwrap();
+
+        let unbound_key = UnboundKey::new(&AES_256_GCM, key)
+            .map_err(|_| ProviderError::Parsing("Invalid AES key".to_string()))?;
+        let key = LessSafeKey::new(unbound_key);
+        let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
+            .map_err(|_| ProviderError::Parsing("Invalid nonce".to_string()))?;
+
+        let mut in_out = payload_str.into_bytes();
+        key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+            .map_err(|_| ProviderError::Parsing("AES encryption failed".to_string()))?;
+
+        let mut output = vec![0x01];
+        output.extend_from_slice(nonce_bytes);
+        output.extend_from_slice(&in_out);
+
+        Ok(general_purpose::STANDARD.encode(&output))
+    }
+
 
     /// Seasonal catalog: anime airing in the given season/year, most popular
     /// first. `season` is the calendar season ("winter" | "spring" |
@@ -776,125 +907,12 @@ impl crate::providers::ReleaseProvider for AnimeProvider {
         _season: usize,
         episode: usize,
     ) -> Result<Vec<Release>, ProviderError> {
-        let details = crate::providers::Provider::details(self, id).await?;
-        let title = details.title.clone();
-        let slug = title.to_lowercase().replace(' ', "-").replace(':', "").replace('\'', "");
-
-        // Phase 1: fetch all HTML pages (async, no scraper types held across awaits)
-        let search_url = format!("https://anitaku.pe/search.html?keyword={}", urlencoding::encode(&slug));
-        let search_html = self.http.get(&search_url).send().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?
-            .text().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-        // Phase 2: parse search HTML in spawn_blocking (scraper is !Send)
-        let anime_id = tokio::task::spawn_blocking(move || {
-            let document = scraper::Html::parse_document(&search_html);
-            let selector = scraper::Selector::parse("div.last_episodes ul li div a").unwrap();
-            document.select(&selector)
-                .next()
-                .and_then(|el| el.value().attr("href"))
-                .map(|link| link.trim_start_matches("/category/").to_string())
-                .ok_or(ProviderError::NotFound)
-        }).await.map_err(|e| ProviderError::Network(format!("parse task failed: {e}")))??;
-
-        // Phase 3: fetch episode page
-        let episode_url = format!("https://anitaku.pe/{}/episode-{}", anime_id, episode);
-        let ep_html = self.http.get(&episode_url).send().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?
-            .text().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-        // Phase 4: parse episode HTML to get iframe src
-        let iframe_src = tokio::task::spawn_blocking(move || {
-            let ep_doc = scraper::Html::parse_document(&ep_html);
-            let iframe_selector = scraper::Selector::parse("iframe").unwrap();
-            ep_doc.select(&iframe_selector)
-                .next()
-                .and_then(|el| el.value().attr("src"))
-                .map(|s| s.to_string())
-                .ok_or(ProviderError::NotFound)
-        }).await.map_err(|e| ProviderError::Network(format!("parse task failed: {e}")))??;
-
-        // Phase 5: fetch embed page
-        let embed_html = self.http.get(&iframe_src).send().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?
-            .text().await
-            .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-        // Phase 6: parse embed HTML to extract stream URLs
-        let title_clone = title.clone();
-        let anime_id_clone = anime_id.clone();
-        let releases = tokio::task::spawn_blocking(move || {
-            let embed_doc = scraper::Html::parse_document(&embed_html);
-            let source_selector = scraper::Selector::parse("source").unwrap();
-            let mut releases = Vec::new();
-
-            for source in embed_doc.select(&source_selector) {
-                if let Some(src) = source.value().attr("src") {
-                    if src.contains(".m3u8") || src.contains(".mp4") {
-                        let quality = source.value().attr("label").unwrap_or("Auto").to_string();
-                        releases.push(Release {
-                            provider: ProviderKind::Anime,
-                            filename: format!("{}-ep{}", title_clone, episode),
-                            quality: Some(quality),
-                            codec: None,
-                            language: Some("Japanese".to_string()),
-                            size_bytes: None,
-                            season: Some(1),
-                            episode: Some(episode),
-                            resource_id: Some(format!("gogo-{}-{}", anime_id_clone, episode)),
-                            mirrors: vec![crate::providers::models::SourceMirror {
-                                label: "Gogoanime".to_string(),
-                                resolver_url: src.to_string(),
-                                headers: Vec::new(),
-                                direct_file: true,
-                            }],
-                        });
-                    }
-                }
-            }
-
-            if releases.is_empty() {
-                if let Some(start) = embed_html.find("sources:") {
-                    if let Some(end) = embed_html[start..].find("]") {
-                        let sources_json = &embed_html[start + 8..start + end + 1];
-                        if let Ok(sources) = serde_json::from_str::<Vec<serde_json::Value>>(sources_json) {
-                            for source in sources {
-                                if let Some(file) = source.get("file").and_then(|v| v.as_str()) {
-                                    let quality = source.get("label").and_then(|v| v.as_str()).unwrap_or("Auto").to_string();
-                                    releases.push(Release {
-                                        provider: ProviderKind::Anime,
-                                        filename: format!("{}-ep{}", title_clone, episode),
-                                        quality: Some(quality),
-                                        codec: None,
-                                        language: Some("Japanese".to_string()),
-                                        size_bytes: None,
-                                        season: Some(1),
-                                        episode: Some(episode),
-                                        resource_id: Some(format!("gogo-{}-{}", anime_id_clone, episode)),
-                                        mirrors: vec![crate::providers::models::SourceMirror {
-                                            label: "Gogoanime".to_string(),
-                                            resolver_url: file.to_string(),
-                                            headers: Vec::new(),
-                                            direct_file: true,
-                                        }],
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if releases.is_empty() {
-                Err(ProviderError::Unavailable("No playable streams found for this episode".to_string()))
-            } else {
-                Ok(releases)
-            }
-        }).await.map_err(|e| ProviderError::Network(format!("parse task failed: {e}")))??;
-
-        Ok(releases)
+        // AllAnime streaming requires dynamic JS execution or updated crypto that changes frequently.
+        // Gogoanime domains are dead. AniDB.app is behind Cloudflare.
+        // For now, return a clear error explaining the situation.
+        Err(ProviderError::Unavailable(
+            "Anime streaming is temporarily unavailable due to provider changes (Gogoanime dead, AllAnime requires dynamic crypto). Metadata, search, and trending work fine. Direct streaming will be restored when a stable provider is available.".to_string()
+        ))
     }
 }
 

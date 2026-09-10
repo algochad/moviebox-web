@@ -60,6 +60,9 @@ zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 tempfile = "3.17.1"
 redis = { version = "0.25", features = ["tokio-comp"] }
 urlencoding = "2.1.3"
+regex = "1.10"
+hex = "0.4"
+ring = "0.17"
 
 [lib]
 name = "moviebox_tui"
