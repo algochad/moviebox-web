@@ -1,7 +1,9 @@
 "use client";
 
-import dashjs from "dashjs";
-import Hls from "hls.js";
+// Type-only imports are safe for SSR (erased at compile time).
+// Runtime imports are dynamic (inside callbacks) to avoid "self is not defined".
+import type Hls from "hls.js";
+import type dashjs from "dashjs";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -450,7 +452,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   }, []);
 
   const playHls = useCallback(
-    (indexUrl: string) => {
+    async (indexUrl: string) => {
       const video = videoRef.current;
       if (!video) return;
       transcodeIndexUrlRef.current = indexUrl;
@@ -462,10 +464,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         }, 150);
         void video.play().catch(() => undefined);
       };
+      // Exception: static import crashes SSR; load only when needed in browser
+      const Hls = (await import("hls.js")).default;
       if (Hls.isSupported()) {
         const hls = new Hls({ maxBufferLength: 40, backBufferLength: Infinity });
         hlsRef.current = hls;
-        hls.on(Hls.Events.ERROR, (_event, data) => {
+        hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean }) => {
           if (!data.fatal) return;
           teardown();
           setError("Live transcode playback failed. Retry or pick another source.");
@@ -631,8 +635,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           }
         }
 
+        // Exception: static import crashes SSR; load only when needed in browser
+        const dashjs = (await import("dashjs")).default;
         const dash = dashjs.MediaPlayer().create();
-        dashRef.current = dash;
         const fatal = (code: number | undefined) =>
           code != null && (code === 27 || code === 34 || code === 2 || code === 11);
         dash.on(dashjs.MediaPlayer.events.ERROR, (data: unknown) => {
