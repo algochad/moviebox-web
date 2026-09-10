@@ -233,19 +233,21 @@ pub(crate) fn generate_client_info_and_ua() -> (String, String) {
     ];
     let version_codes = [50020117, 50020118, 50020119, 50020120, 50020121];
     let network_types = ["NETWORK_WIFI", "NETWORK_MOBILE"];
-    let timezones = [
-        "Asia/Kolkata",
-        "Asia/Shanghai",
-        "Asia/Tokyo",
-        "America/New_York",
-        "Europe/London",
-    ];
+
+    let region = crate::config::moviebox_region();
+    // Region-matched client identity: the gateway uses these to shape market
+    // shelves alongside the spoofed x-forwarded-for address.
+    let (region_code, timezone, sp_code) = match region {
+        "ph" => ("PH", "Asia/Manila", "51503"),
+        "us" => ("US", "America/New_York", "310030"),
+        "sg" => ("SG", "Asia/Singapore", "52501"),
+        _ => ("IN", "Asia/Kolkata", "40401"),
+    };
 
     let android = android_versions[rng.random_range(0..android_versions.len())];
     let device = redmi_devices[rng.random_range(0..redmi_devices.len())];
     let version_code = version_codes[rng.random_range(0..version_codes.len())];
     let network = network_types[rng.random_range(0..network_types.len())];
-    let timezone = timezones[rng.random_range(0..timezones.len())];
     let gaid = random_uuid();
     let device_id = random_hex(32);
 
@@ -255,8 +257,8 @@ pub(crate) fn generate_client_info_and_ua() -> (String, String) {
     );
 
     let client_info = format!(
-        r#"{{"package_name":"com.community.oneroom","version_name":"4.0.01.0813.03","version_code":{},"os":"android","os_version":"{}","install_ch":"ps","device_id":"{}","install_store":"ps","gaid":"{}","brand":"{}","model":"{}","system_language":"en","net":"{}","region":"US","timezone":"{}","sp_code":"40401","X-Play-Mode":"2"}}"#,
-        version_code, android.0, device_id, gaid, device.1, device.0, network, timezone
+        r#"{{"package_name":"com.community.oneroom","version_name":"4.0.01.0813.03","version_code":{},"os":"android","os_version":"{}","install_ch":"ps","device_id":"{}","install_store":"ps","gaid":"{}","brand":"{}","model":"{}","system_language":"en","net":"{}","region":"{}","timezone":"{}","sp_code":"{}","X-Play-Mode":"2"}}"#,
+        version_code, android.0, device_id, gaid, device.1, device.0, network, region_code, timezone, sp_code
     );
 
     (user_agent, client_info)
@@ -282,13 +284,32 @@ fn random_uuid() -> String {
 }
 
 pub(crate) fn random_spoofed_ip() -> String {
+    let prefixes: &[&str] = match crate::config::moviebox_region() {
+        // Globe / Smart / PLDT / Converge residential ranges (Philippines).
+        "ph" => &[
+            "112.198", "112.204", "112.205", "112.208", "112.209", "112.210", "49.144", "49.145",
+            "49.146", "49.147", "49.150", "49.151", "119.92", "119.93", "119.94", "124.104",
+            "124.105", "124.106", "124.107", "203.87", "210.4", "121.54", "103.3", "202.90",
+        ],
+        // Comcast / Verizon / Spectrum-style residential ranges (United States).
+        "us" => &[
+            "24.60", "67.160", "67.170", "73.45", "73.75", "98.102", "172.56", "174.95", "68.32",
+            "75.128", "100.33", "136.52",
+        ],
+        // Singtel / StarHub / M1-style ranges (Singapore edge).
+        "sg" => &["203.116", "203.117", "128.106", "116.14", "42.60", "36.37", "138.75"],
+        // Default: Indian ISPs (BSNL / Airtel / Jio / Vi), legacy behavior.
+        _ => &[
+            "103.241", "49.36", "117.195", "106.198", "122.162", "157.32", "182.70", "103.58",
+            "27.60", "59.90",
+        ],
+    };
+    random_ip_from(prefixes)
+}
+
+fn random_ip_from(prefixes: &[&str]) -> String {
     use rand::RngExt;
     let mut rng = rand::rng();
-
-    let prefixes: &[&str] = &[
-        "103.241", "49.36", "117.195", "106.198", "122.162", "157.32", "182.70", "103.58", "27.60",
-        "59.90",
-    ];
     let prefix = prefixes[rng.random_range(0..prefixes.len())];
     let c: u8 = rng.random_range(1..254);
     let d: u8 = rng.random_range(1..254);

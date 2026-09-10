@@ -98,7 +98,12 @@ pub fn parse_jwt_claims(token: &str) -> (Option<String>, Option<u64>) {
 }
 
 pub fn session_cache_path() -> PathBuf {
-    crate::config::cache_dir().join("moviebox_session.bin")
+    let region = crate::config::moviebox_region();
+    if region == "in" {
+        crate::config::cache_dir().join("moviebox_session.bin")
+    } else {
+        crate::config::cache_dir().join(format!("moviebox_session_{region}.bin"))
+    }
 }
 
 pub fn load_persisted_session() -> Option<MovieBoxSession> {

@@ -236,9 +236,21 @@ fn hash_key(value: &str) -> String {
 }
 
 pub fn get_provider_cache_dir(provider: ProviderKind, subdir: &str) -> PathBuf {
-    crate::config::cache_dir()
-        .join(provider.cache_key())
-        .join(subdir)
+    let base = crate::config::cache_dir();
+    if provider == ProviderKind::MovieBox {
+        // Region-scoped moviebox dirs: editorial shelves and availability are
+        // market-specific, so search/homepage/details caches must never mix
+        // regions. The default "in" region keeps the legacy folder name.
+        let region = crate::config::moviebox_region();
+        if region == "in" {
+            base.join(provider.cache_key()).join(subdir)
+        } else {
+            base.join(format!("{}_{region}", provider.cache_key()))
+                .join(subdir)
+        }
+    } else {
+        base.join(provider.cache_key()).join(subdir)
+    }
 }
 
 pub fn get_provider_stream_path(

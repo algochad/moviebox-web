@@ -1,8 +1,32 @@
 use crate::providers::addons::models::InstalledAddon;
 use crate::providers::models::ProviderKind;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+
+/// Streaming-market region for the MovieBox gateway. Controls the spoofed
+/// client IP (x-forwarded-for) plus per-region session/cache namespaces, so
+/// editorial shelves and market availability match the region instead of
+/// defaulting to the Indian market.
+///
+/// Values: `in` (default), `ph`, `us`, `sg`. Override with MOVIEBOX_REGION.
+pub const MOVIEBOX_REGIONS: &[&str] = &["in", "ph", "us", "sg"];
+
+pub fn moviebox_region() -> &'static str {
+    static REGION: OnceLock<&'static str> = OnceLock::new();
+    REGION.get_or_init(|| {
+        let raw = std::env::var("MOVIEBOX_REGION").unwrap_or_default();
+        let normalized = raw.trim().to_ascii_lowercase();
+        if MOVIEBOX_REGIONS.contains(&normalized.as_str()) {
+            // Leak a stable copy: the env value may outlive the process, and
+            // this runs exactly once.
+            Box::leak(normalized.into_boxed_str())
+        } else {
+            "in"
+        }
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
