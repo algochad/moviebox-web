@@ -928,6 +928,12 @@ impl AnimeProvider {
             if let Some(stream_url) = stream.get("url").and_then(|v| v.as_str()) {
                 let quality = stream.get("quality").and_then(|v| v.as_str()).unwrap_or("auto").to_string();
                 let provider = stream.get("provider").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                let referrer = stream
+                    .get("referrer")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("https://allanime.day/")
+                    .to_string();
 
                 releases.push(Release {
                     provider: ProviderKind::Anime,
@@ -943,7 +949,7 @@ impl AnimeProvider {
                         label: format!("Anime ({})", provider),
                         resolver_url: stream_url.to_string(),
                         headers: vec![
-                            ("Referer".to_string(), "https://allanime.day/".to_string()),
+                            ("Referer".to_string(), referrer),
                             ("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string()),
                         ],
                         direct_file: true,

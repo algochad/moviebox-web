@@ -743,6 +743,51 @@ async fn create_ticket(
     Json(serde_json::json!({ "ticket": ticket })).into_response()
 }
 
+async fn proxy_fetch_foreign(state: AppState, foreign: Ticket, headers: HeaderMap) -> Response {
+    let mut builder = state.proxy_client.get(&foreign.raw_url);
+    for (name, value) in &foreign.headers {
+        if let Ok(n) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) {
+            builder = builder.header(n, value);
+        }
+    }
+    builder = builder.header(reqwest::header::ACCEPT_ENCODING, "identity");
+    if let Some(range) = headers.get(reqwest::header::RANGE) {
+        builder = builder.header(reqwest::header::RANGE, range);
+    }
+    let resp = match builder.send().await {
+        Ok(r) => r,
+        Err(e) => return api_error(StatusCode::BAD_GATEWAY, format!("upstream error: {e}")),
+    };
+    let status = resp.status();
+    let mut out = HeaderMap::new();
+    const PASS: [&str; 6] = [
+        "content-type",
+        "content-range",
+        "accept-ranges",
+        "etag",
+        "last-modified",
+        "cache-control",
+    ];
+    for name in PASS {
+        if let Some(v) = resp.headers().get(name) {
+            let n = axum::http::HeaderName::from_static(name);
+            out.insert(n, v.clone());
+        }
+    }
+    if let Some(len) = resp.content_length() {
+        out.insert(
+            axum::http::header::CONTENT_LENGTH,
+            axum::http::HeaderValue::from_str(&len.to_string()).unwrap(),
+        );
+    }
+    let stream = resp.bytes_stream();
+    (status, out, Body::from_stream(stream)).into_response()
+}
+
+async fn proxy_fetch_inner_foreign(state: AppState, foreign: Ticket, headers: HeaderMap) -> Response {
+    proxy_fetch_foreign(state, foreign, headers).await
+}
+
 async fn proxy_fetch_root(
     State(state): State<AppState>,
     Path(ticket): Path<String>,
@@ -779,7 +824,22 @@ async fn proxy_fetch_inner(
         if abs.is_empty() || t.origin.is_empty() {
             return api_error(StatusCode::BAD_REQUEST, "bad proxy path");
         }
-        format!("{}/{}", t.origin, abs)
+        // A foreign-ticket reference minted by the HLS rewrite for a
+        // cross-host segment URL: resolve it to the stored upstream URL and
+        // adopt ITS headers (provider-required Referer/UA).
+        if let Some(foreign) = state.tickets.get(abs) {
+            return proxy_fetch_inner_foreign(state, foreign, headers).await;
+        }
+        if abs.starts_with("http://") || abs.starts_with("https://") {
+            abs.to_string()
+        } else {
+            format!("{}/{}", t.origin, abs)
+        }
+    } else if rest.starts_with("http://") || rest.starts_with("https://") {
+        // The HLS rewrite emits fully-qualified rewritten URLs when the
+        // upstream playlist references a different host/port (multi-CDN);
+        // the proxy path then carries the whole URL after /a/.
+        rest.clone()
     } else {
         let base = t
             .raw_url
@@ -875,12 +935,20 @@ async fn proxy_fetch_inner(
                     if trimmed.is_empty() || trimmed.starts_with('#') {
                         return line.to_string();
                     }
-                    // Rewrite absolute upstream URLs
+                    // Rewrite absolute upstream URLs (same origin).
                     if trimmed.starts_with(&t.origin) {
                         return line.replacen(&t.origin, &base, 1);
                     }
+                    // Rewrite absolute URLs on OTHER hosts: issue a ticket for
+                    // the foreign URL and route through this same proxy so the
+                    // provider-required headers still attach.
+                    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                        let (foreign_ticket, _) =
+                            state.tickets.insert(trimmed.to_string(), t.headers.clone());
+                        return format!("{base}/{foreign_ticket}");
+                    }
                     // Rewrite relative URLs (e.g. "seg/0" or "360p.m3u8")
-                    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") && !trimmed.starts_with('/') {
+                    if !trimmed.starts_with('/') {
                         return format!("{proxy_dir}{trimmed}");
                     }
                     line.to_string()

@@ -47,6 +47,12 @@ func getEpisodeStreamsForMode(slug string, config providers.PlaybackConfig, epNo
 		if err != nil {
 			continue
 		}
+		// Reject ad-injected decoy streams (ByteDance/TikTok CDN segments that
+		// 403 with "domain forbidden") so the caller falls through to the
+		// next embed/provider instead of returning an unplayable URL.
+		if err := validateDecoyStream(stream.URL, stream.Referrer); err != nil {
+			continue
+		}
 		return singleStreamResult(stream)
 	}
 

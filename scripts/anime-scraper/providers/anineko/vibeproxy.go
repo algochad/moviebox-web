@@ -157,6 +157,16 @@ func (p *vibeProxy) serveVariant(w http.ResponseWriter, sessionID string, sessio
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	// Fast-reject ad-injected decoy variants: if the first media segment URI
+	// points at ByteDance/TikTok ad infrastructure, fail immediately so the
+	// caller falls through to the next embed/provider instead of registering
+	// 142 unplayable segments and stalling validation on 403s.
+	if firstSeg := firstMediaLine(body); firstSeg != "" {
+		if isDecoySegmentURI(resolvePlaylistURL(variantURL, firstSeg)) {
+			http.Error(w, "anineko decoy variant: ad-injected playlist", http.StatusBadGateway)
+			return
+		}
+	}
 
 	segments := make([]vibeSegment, 0)
 	var currentDuration float64

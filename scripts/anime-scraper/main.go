@@ -176,18 +176,41 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("[Resolve] Trying provider %s for show %s ep %d", p.Name(), showID, req.Episode)
 
-		urls, err := p.GetEpisodeURL(config, showID, req.Episode)
-		if err != nil {
-			log.Printf("[Resolve] Provider %s failed: %v", p.Name(), err)
-			failures = append(failures, p.Name()+": "+err.Error())
-			return false
+		var urls []string
+		hints := map[string]providers.StreamPlaybackHint{}
+		if hr, ok := p.(providers.HintResolver); ok {
+			u, h, herr := hr.GetEpisodeURLForModeWithHints(config, showID, req.Episode, config.SubOrDub)
+			if herr != nil {
+				log.Printf("[Resolve] Provider %s failed: %v", p.Name(), herr)
+				failures = append(failures, p.Name()+": "+herr.Error())
+				return false
+			}
+			urls, hints = u, h
+		} else {
+			u, err := p.GetEpisodeURL(config, showID, req.Episode)
+			if err != nil {
+				log.Printf("[Resolve] Provider %s failed: %v", p.Name(), err)
+				failures = append(failures, p.Name()+": "+err.Error())
+				return false
+			}
+			urls = u
 		}
 
 		for i, url := range urls {
+			referrer := ""
+			if h, ok := hints[url]; ok {
+				referrer = h.Referrer
+			}
+			if referrer == "" {
+				if meta, ok := providers.MetaFor(p.Name()); ok && meta.Referrer != "" {
+					referrer = meta.Referrer
+				}
+			}
 			streams = append(streams, StreamInfo{
 				URL:      url,
 				Quality:  fmt.Sprintf("auto-%d", i),
 				Provider: p.Name(),
+				Referrer: referrer,
 			})
 		}
 		return len(urls) > 0
