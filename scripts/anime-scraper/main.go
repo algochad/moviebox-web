@@ -56,8 +56,28 @@ type SearchResult struct {
 
 func getProviders() []providers.Provider {
 	names := providers.RegisteredNames()
+	// Prefer providers that resolve fast and serve playable streams:
+	// anipub first (direct megaplay URLs), then allanime, then the rest.
+	// anineko goes last — its embeds usually resolve to ad-injected decoy
+	// playlists that burn ~35s in validation before failing.
+	preferred := []string{"anipub", "allanime", "animepahe", "senshi", "anineko"}
+	ordered := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range preferred {
+		for _, n := range names {
+			if n == name && !seen[n] {
+				ordered = append(ordered, n)
+				seen[n] = true
+			}
+		}
+	}
+	for _, n := range names {
+		if !seen[n] {
+			ordered = append(ordered, n)
+		}
+	}
 	var result []providers.Provider
-	for _, name := range names {
+	for _, name := range ordered {
 		if p, err := providers.New(name); err == nil {
 			result = append(result, p)
 		}

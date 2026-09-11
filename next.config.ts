@@ -13,9 +13,6 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return [
-      // JSON API of the Rust backend, kept out of the browser-visible
-      // namespace under /api/mb/*.
-      { source: "/api/mb/:path*", destination: `${backend}/api/:path*` },
       // Media proxy: browsers fetch every stream byte through this same
       // origin so Next can hand requests to the header-aware proxy. Range
       // requests pass through for seeking.

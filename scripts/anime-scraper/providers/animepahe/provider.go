@@ -184,6 +184,31 @@ func rodBrowserBin() string {
 			return v
 		}
 	}
+	// Fall back to well-known system locations so the DDoS-Guard bypass works
+	// without manual env configuration.
+	for _, p := range []string{
+		"/home/algochad/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/firefox",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates := []string{
+			filepath.Join(home, ".cache/ms-playwright/chromium-1217/chrome-linux64/chrome"),
+			filepath.Join(home, ".cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/headless_shell"),
+		}
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	return ""
 }
 
