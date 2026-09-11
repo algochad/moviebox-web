@@ -197,6 +197,9 @@ func (p *vibeProxy) serveSegment(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 
+	// Revert to session.referer (embed URL) as per upstream /tmp/curd behavior.
+	// The "domain forbidden" might be due to missing query tokens (now fixed in bibiemb.go)
+	// or missing cookies (adding jar next).
 	data, err := fetchBytes(segments[index].url, session.referer)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
