@@ -68,11 +68,52 @@ struct TicketStore {
 
 impl TicketStore {
     const TTL: Duration = Duration::from_secs(30 * 60);
-    const MAX: usize = 512;
+    const MAX: usize = 8192;
 
     fn insert(&self, raw_url: String, headers: Vec<(String, String)>) -> (String, String) {
         let origin = origin_of(&raw_url);
         let mut map = self.inner.lock();
+        if map.len() >= Self::MAX {
+            map.retain(|_, t| t.created.elapsed() < Self::TTL);
+        }
+        if map.len() >= Self::MAX {
+            let oldest = map
+                .iter()
+                .min_by_key(|(_, t)| t.created)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                map.remove(&k);
+            }
+        }
+        let ticket = loop {
+            let candidate = random_hex(16);
+            if !map.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        map.insert(
+            ticket.clone(),
+            Ticket {
+                raw_url,
+                origin: origin.clone(),
+                headers,
+                created: Instant::now(),
+            },
+        );
+        (ticket, origin)
+    }
+
+    /// Insert-and-reuse: return the existing ticket when the same
+    /// (raw_url, headers) pair is already stored and fresh, so HLS rewrites
+    /// that touch hundreds of segment URLs don't evict live tickets.
+    fn insert_dedup(&self, raw_url: String, headers: Vec<(String, String)>) -> (String, String) {
+        let origin = origin_of(&raw_url);
+        let mut map = self.inner.lock();
+        if let Some((ticket, _)) = map.iter().find(|(_, t)| {
+            t.raw_url == raw_url && t.headers == headers && t.created.elapsed() < Self::TTL
+        }) {
+            return (ticket.clone(), origin);
+        }
         if map.len() >= Self::MAX {
             map.retain(|_, t| t.created.elapsed() < Self::TTL);
         }
@@ -941,10 +982,13 @@ async fn proxy_fetch_inner(
                     }
                     // Rewrite absolute URLs on OTHER hosts: issue a ticket for
                     // the foreign URL and route through this same proxy so the
-                    // provider-required headers still attach.
+                    // provider-required headers still attach. Tickets are
+                    // content-addressed per (url, headers) upstream so repeat
+                    // fetches reuse them instead of evicting live tickets.
                     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                        let (foreign_ticket, _) =
-                            state.tickets.insert(trimmed.to_string(), t.headers.clone());
+                        let (foreign_ticket, _) = state
+                            .tickets
+                            .insert_dedup(trimmed.to_string(), t.headers.clone());
                         return format!("{base}/{foreign_ticket}");
                     }
                     // Rewrite relative URLs (e.g. "seg/0" or "360p.m3u8")
