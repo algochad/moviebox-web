@@ -850,7 +850,47 @@ async fn proxy_fetch_inner(
             "{}/api/proxy/{ticket}/a",
             state.proxy_base.trim_end_matches('/')
         );
-        let text = String::from_utf8_lossy(&bytes).replace(&t.origin, &base);
+        // Determine if this is an HLS manifest (needs relative URL rewriting)
+        let is_hls = upstream.ends_with(".m3u8") || content_type.contains("mpegurl") || content_type.contains("vnd.apple.mpegurl");
+        
+        // Determine the directory prefix for resolving relative URLs in HLS manifests.
+        // e.g. if upstream is http://host/stream/id/master.m3u8, dir is /stream/id/
+        let upstream_path = if is_hls {
+            upstream
+                .split_once("://")
+                .and_then(|(_, rest)| rest.find('/').map(|idx| &rest[idx..]))
+                .and_then(|path| path.rsplit_once('/').map(|(dir, _)| dir.to_string()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let proxy_dir = format!("{base}{upstream_path}/");
+
+        let text = if is_hls {
+            // HLS: rewrite relative URLs line-by-line
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        return line.to_string();
+                    }
+                    // Rewrite absolute upstream URLs
+                    if trimmed.starts_with(&t.origin) {
+                        return line.replacen(&t.origin, &base, 1);
+                    }
+                    // Rewrite relative URLs (e.g. "seg/0" or "360p.m3u8")
+                    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") && !trimmed.starts_with('/') {
+                        return format!("{proxy_dir}{trimmed}");
+                    }
+                    line.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // DASH/Other: simple origin replacement only (preserve XML structure)
+            String::from_utf8_lossy(&bytes).replace(&t.origin, &base)
+        };
         // Preserve original content-type for HLS, override for DASH if missing
         let final_content_type = if content_type.contains("mpegurl") || content_type.contains("vnd.apple.mpegurl") {
             content_type.to_string()
