@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,12 +59,24 @@ func getVibeProxy() (*vibeProxy, error) {
 	mux.HandleFunc("/stream/", corsWrap(proxy.handle))
 	server := &http.Server{Handler: mux}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	bindHost := strings.TrimSpace(os.Getenv("SCRAPER_HOST"))
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
+	listener, err := net.Listen("tcp", bindHost+":0")
 	if err != nil {
 		return nil, fmt.Errorf("start vibe proxy listener: %w", err)
 	}
 	proxy.server = server
-	proxy.baseURL = "http://" + listener.Addr().String()
+	advertise := listener.Addr().String()
+	if host, port, err := net.SplitHostPort(advertise); err == nil && (host == "0.0.0.0" || host == "::") {
+		if publicHost := strings.TrimSpace(os.Getenv("SCRAPER_PUBLIC_HOST")); publicHost != "" {
+			advertise = net.JoinHostPort(publicHost, port)
+		} else {
+			advertise = net.JoinHostPort("127.0.0.1", port)
+		}
+	}
+	proxy.baseURL = "http://" + advertise
 
 	go func() {
 		_ = server.Serve(listener)

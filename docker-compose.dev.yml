@@ -1,0 +1,146 @@
+# Archlast Cine — local dev compose (hot-reload, bind mounts).
+#
+# The production `docker-compose.yml` builds standalone images for Coolify;
+# this file instead mounts the working tree so `next dev`, `nest start`,
+# `cargo run`, and `go run` pick up edits without rebuilding. No image is
+# published from here — it is purely a local DX wrapper.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Ports default to the same host ports as `npm run dev` (3000/9797/4100/9798)
+# plus postgres/redis. Set *_HOST_PORT in .env when the host already runs
+# those services (see .env comments for the 55432/56379 example).
+name: archlast-cine-dev
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-moviebox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-moviebox}
+      POSTGRES_DB: ${POSTGRES_DB:-moviebox}
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-moviebox} -d $${POSTGRES_DB:-moviebox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redisdata-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+
+  # Nest account API. Rebuilds on container restart via the bind mount,
+  # mirroring scripts/dev.mjs (install + prisma generate + build + serve).
+  api:
+    image: node:22-slim
+    working_dir: /work/api
+    command: sh -c "npm install --no-audit --no-fund && npm run build && npm run start"
+    volumes:
+      - ./api:/work/api
+      - api-node-modules:/work/api/node_modules
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://${POSTGRES_USER:-moviebox}:${POSTGRES_PASSWORD:-moviebox}@db:5432/${POSTGRES_DB:-moviebox}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-moviebox}
+      API_PORT: "4100"
+      PORT: "4100"
+      API_HOST: "0.0.0.0"
+      PRISMA_AUTO_PUSH: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_PORT:-4100}:4100"
+
+  # Rust media backend. Hot reload needs cargo-watch; without it this still
+  # rebuilds on container restart via the bind mount.
+  backend:
+    image: rust:1.97-bookworm
+    working_dir: /work/MovieBox-Tui/server
+    command: sh -c "cargo run --manifest-path /work/MovieBox-Tui/server/Cargo.toml"
+    volumes:
+      - ./MovieBox-Tui:/work/MovieBox-Tui
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-target:/work/MovieBox-Tui/server/target
+    environment:
+      MOVIEBOX_SERVER_HOST: "0.0.0.0"
+      MOVIEBOX_SERVER_PORT: "9797"
+      MOVIEBOX_REGION: ${MOVIEBOX_REGION:-ph}
+      MOVIEBOX_PROXY_BASE: ${MOVIEBOX_PROXY_BASE:-http://localhost:3000}
+      ANIME_SIDECAR_URL: "http://scraper:9798"
+      RUST_LOG: ${RUST_LOG:-warn}
+    depends_on:
+      scraper:
+        condition: service_started
+    ports:
+      - "${BACKEND_HOST_PORT:-9797}:9797"
+
+  # Go anime scraper sidecar. `go run .` rebuilds on restart; set
+  # SCRAPER_PORT only (bind is always 0.0.0.0 in dev).
+  scraper:
+    image: golang:1.22-bookworm
+    working_dir: /work/scripts/anime-scraper
+    command: sh -c "go run ."
+    volumes:
+      - ./scripts/anime-scraper:/work/scripts/anime-scraper
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      SCRAPER_HOST: "0.0.0.0"
+      SCRAPER_PUBLIC_HOST: "scraper"
+      SCRAPER_PORT: "9798"
+      ROD_BIN: ${ROD_BIN:-}
+    ports:
+      - "${SCRAPER_HOST_PORT:-9798}:9798"
+  # Next.js dev server. Talks to the compose services over DNS; browsers hit
+  # localhost:3000 on the host.
+  web:
+    image: node:22-slim
+    working_dir: /work
+    command: sh -c "npm install --no-audit --no-fund && npm run dev:web -- --port 3000 --hostname 0.0.0.0"
+    volumes:
+      - .:/work
+      - web-node-modules:/work/node_modules
+      - /work/MovieBox-Tui/server/target
+      - /work/.next
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      MB_BACKEND_URL: "http://backend:9797"
+      API_URL: "http://api:4100"
+      MOVIEBOX_PROXY_BASE: ${MOVIEBOX_PROXY_BASE:-http://localhost:3000}
+    depends_on:
+      backend:
+        condition: service_started
+      api:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  pgdata-dev:
+  redisdata-dev:
+  api-node-modules:
+  web-node-modules:
+  cargo-registry:
+  cargo-target:
+  go-mod-cache:

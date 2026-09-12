@@ -19,6 +19,13 @@ const ALLANIME_CRYPTO_KEY: &str = "Xot36i3lK3:v1";
 
 const SENSHI_BASE_URL: &str = "https://senshi.live";
 const ANIME_SCRAPER_SIDECAR: &str = "http://127.0.0.1:9798";
+
+fn anime_scraper_sidecar() -> String {
+    std::env::var("ANIME_SIDECAR_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| ANIME_SCRAPER_SIDECAR.to_string())
+}
 const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
 const SEARCH_QUERY: &str = r#"
@@ -899,7 +906,7 @@ impl AnimeProvider {
         show_id: &str,
         episode: usize,
     ) -> Result<Vec<Release>, ProviderError> {
-        let url = format!("{}/resolve", ANIME_SCRAPER_SIDECAR);
+        let url = format!("{}/resolve", anime_scraper_sidecar());
 
         // Sidecar can take 17s+ (AniNeko vibe-proxy startup); use a dedicated long-timeout client
         let sidecar_client = reqwest::Client::builder()

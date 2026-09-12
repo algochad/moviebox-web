@@ -81,6 +81,28 @@ services:
     ports:
       - "${API_HOST_PORT:-}:4100"
 
+  scraper:
+    build:
+      context: .
+      dockerfile: scripts/anime-scraper/Dockerfile
+    restart: unless-stopped
+    environment:
+      SCRAPER_HOST: "0.0.0.0"
+      # Hostname the Rust backend (web container) uses to reach vibe-proxy
+      # playlist URLs minted by the scraper. Must match the compose service
+      # name so 0.0.0.0 listeners advertise as http://scraper:<port>/....
+      SCRAPER_PUBLIC_HOST: "scraper"
+      SCRAPER_PORT: "9798"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9798/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    # Internal only — the Rust backend reaches it as http://scraper:9798.
+    # Expose via SCRAPER_HOST_PORT=9798 locally for direct control tests.
+    ports:
+      - "${SCRAPER_HOST_PORT:-}:9798"
   web:
     build: .
     restart: unless-stopped
@@ -88,11 +110,12 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-      # Rust backend runs INSIDE the web container (see scripts/docker-entrypoint.sh).
       MOVIEBOX_REGION: ${MOVIEBOX_REGION:-ph}
       MOVIEBOX_SERVER_HOST: "127.0.0.1"
       MOVIEBOX_SERVER_PORT: "9797"
       MB_BACKEND_URL: "http://127.0.0.1:9797"
+      # Backend reaches the Go sidecar over compose DNS (see `scraper` above).
+      ANIME_SIDECAR_URL: "http://scraper:9798"
       # External origin browsers use for DASH/HLS manifests behind Coolify's
       # reverse proxy. Set to your public domain, e.g. https://cine.example.com
       MOVIEBOX_PROXY_BASE: ${MOVIEBOX_PROXY_BASE:-}
@@ -100,6 +123,8 @@ services:
       API_URL: "http://api:4100"
     depends_on:
       api:
+        condition: service_healthy
+      scraper:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

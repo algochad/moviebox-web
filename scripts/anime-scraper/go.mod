@@ -12,4 +12,3 @@ require (
 	github.com/ysmood/leakless v0.9.0 // indirect
 )
 
-replace github.com/Wraient/curd => /tmp/curd

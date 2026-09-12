@@ -339,6 +339,7 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "ok",
 		"providers": len(getProviders()),
@@ -367,12 +368,16 @@ func main() {
 	if port == "" {
 		port = "9798"
 	}
+	host := os.Getenv("SCRAPER_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
 
 	http.HandleFunc("/resolve", corsMiddleware(handleResolve))
 	http.HandleFunc("/search", corsMiddleware(handleSearch))
 	http.HandleFunc("/health", corsMiddleware(handleHealth))
 
-	addr := "127.0.0.1:" + port
+	addr := host + ":" + port
 	log.Printf("Anime scraper sidecar (curd providers) listening on http://%s", addr)
 	log.Printf("Available providers: %d", len(getProviders()))
 
