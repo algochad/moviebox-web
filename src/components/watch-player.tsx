@@ -529,6 +529,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           setError("This title isn't available right now. Try again or pick another source.");
           setState("error");
         });
+        hls.on(Hls.Events.MANIFEST_PARSED, startPlayback);
         hls.on(Hls.Events.LEVEL_UPDATED, () => {
           ensureActiveCues(video, subTrackRef.current);
         });

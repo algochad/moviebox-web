@@ -25,6 +25,32 @@ var decoySegmentMarkers = []string{
 // maxPlaylistBytes bounds how much of a manifest we download during validation.
 const maxPlaylistBytes = 2 << 20
 
+// megaplayProxyHost is the first-party fallback megaplay's own client uses
+// (TikTokCdnFailover proxyHost) when the direct file host 403s: it forwards
+// with ?domain=<original host>, bypassing the hotlink check. Verified live:
+// bb.akirax.buzz serves the same master the direct host 403s.
+const megaplayProxyHost = "bb.akirax.buzz"
+
+// rewriteDirectToProxy maps a direct megaplay file URL onto the proxy
+// fallback, preserving path and adding ?domain=<original host>. Non-file
+// hosts pass through unchanged.
+func rewriteDirectToProxy(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return rawURL
+	}
+	host := strings.ToLower(u.Host)
+	if host == megaplayProxyHost || strings.HasSuffix(host, ".akirax.buzz") {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set("domain", u.Host)
+	u.RawQuery = q.Encode()
+	u.Scheme = "https"
+	u.Host = megaplayProxyHost
+	return u.String()
+}
+
 // isMegaplayCDNHost reports whether the stream is hosted by the megaplay CDN,
 // which is the only CDN this validation is scoped to.
 func isMegaplayCDNHost(host string) bool {

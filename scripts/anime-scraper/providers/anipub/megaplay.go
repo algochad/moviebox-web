@@ -1,6 +1,11 @@
 package anipub
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -42,12 +47,19 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 		return "", "", fmt.Errorf("megaplay data-id not found")
 	}
 
-	// getSourcesNew returns sources.file directly; the legacy getSources
-	// endpoint omits it and only returns an "enc" token for browser-side
-	// decryption, so prefer the new endpoint and fall back to the old one.
+	// Both endpoints now return only tracks + an "enc" token: an AES-CBC
+	// (key/IV from megaplay newclient.min.js) encrypted JSON blob carrying
+	// {"file": "<master.m3u8>"} for browser-side WebCrypto decryption.
+	// Decrypt it server-side with the standard library so resolve works
+	// without a browser.
 	var payload megaplaySourcesResponse
 	if err := fetchJSON(megaplaySourcesURL(dataID[1], true), streamPage, &payload); err != nil {
 		return "", "", err
+	}
+	if strings.TrimSpace(payload.Sources.File) == "" && payload.Enc != "" {
+		if file, err := decryptMegaplayEnc(payload.Enc); err == nil {
+			payload.Sources.File = file
+		}
 	}
 	if strings.TrimSpace(payload.Sources.File) == "" {
 		var legacy megaplaySourcesResponse
@@ -55,6 +67,11 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 			return "", "", err
 		}
 		payload.Tracks = legacy.Tracks
+		if payload.Sources.File == "" && legacy.Enc != "" {
+			if file, err := decryptMegaplayEnc(legacy.Enc); err == nil {
+				payload.Sources.File = file
+			}
+		}
 	}
 
 	streamURL := strings.TrimSpace(payload.Sources.File)
@@ -63,6 +80,52 @@ func resolveMegaplayStream(videoLink, mode string) (string, string, error) {
 	}
 	subtitle := pickSubtitleTrack(payload, mode)
 	return streamURL, subtitle, nil
+}
+
+// Megaplay "enc" token decryption: AES-256-CBC with a 32-byte zero-padded key
+// and a 16-byte IV, both embedded in megaplay's newclient.min.js. The token
+// is base64url; the plaintext is PKCS#7 padded JSON like {"file": "..."}.
+func decryptMegaplayEnc(token string) (string, error) {
+	key := make([]byte, 32)
+	copy(key, "i?LMTAx0Q6,:}50U")
+	iv := []byte("W0;27ToaUpl_P%'c")
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
+	if err != nil {
+		return "", fmt.Errorf("decode enc token: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) == 0 || len(raw)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("bad enc length %d", len(raw))
+	}
+	plain := make([]byte, len(raw))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, raw)
+	pad := int(plain[len(plain)-1])
+	if pad < 1 || pad > aes.BlockSize || pad > len(plain) {
+		return "", fmt.Errorf("bad enc padding")
+	}
+	for _, b := range plain[len(plain)-pad:] {
+		if int(b) != pad {
+			return "", fmt.Errorf("bad enc padding")
+		}
+	}
+	plain = plain[:len(plain)-pad]
+	idx := bytes.IndexByte(plain, '{')
+	if idx < 0 {
+		return "", fmt.Errorf("enc payload has no JSON")
+	}
+	var out struct {
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal(plain[idx:], &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.File) == "" {
+		return "", fmt.Errorf("enc payload has no file")
+	}
+	return strings.TrimSpace(out.File), nil
 }
 
 // megaplayStreamPageURL maps an anipub video link to its megaplay watch page.

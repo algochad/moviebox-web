@@ -38,9 +38,17 @@ func getEpisodeStreamsForMode(showID string, config providers.PlaybackConfig, ep
 		return nil, nil, err
 	}
 
-	// Reject ad-injected decoy playlists served by the megaplay CDN so the
-	// caller can fall back to another provider instead of opening an idle mpv.
-	if err := validateResolvedStream(streamURL); err != nil {
+	// The direct file host hotlink-403s non-browser clients; megaplay's own
+	// client fails over to its first-party proxy (?domain=<host>), so do the
+	// same before validation instead of returning an unplayable URL.
+	if proxied := rewriteDirectToProxy(streamURL); proxied != streamURL {
+		if err := validateResolvedStream(proxied); err == nil {
+			streamURL = proxied
+		} else if err := validateResolvedStream(streamURL); err != nil {
+			curdhost.Log(fmt.Sprintf("anipub stream %q rejected: %v", streamURL, err))
+			return nil, nil, err
+		}
+	} else if err := validateResolvedStream(streamURL); err != nil {
 		curdhost.Log(fmt.Sprintf("anipub stream %q rejected: %v", streamURL, err))
 		return nil, nil, err
 	}
