@@ -499,7 +499,10 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       // Exception: static import crashes SSR; load only when needed in browser
       const Hls = (await import("hls.js")).default;
       // A teardown while the import was in flight → abandon, don't attach.
-      if (sourceEpochRef.current !== epoch || !transcodeActiveRef.current) return;
+      // NB: the transcodeActive guard lives in startTranscode's caller only —
+      // direct HLS sources (anime HLS, non-HEVC DASH) play with transcode
+      // inactive, so gating here strands them on the spinner forever.
+      if (sourceEpochRef.current !== epoch) return;
       if (Hls.isSupported()) {
         const hls = new Hls({ maxBufferLength: 40, backBufferLength: Infinity });
         hlsRef.current = hls;
