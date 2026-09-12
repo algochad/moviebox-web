@@ -5,9 +5,6 @@ const backend = process.env.MB_BACKEND_URL ?? "http://127.0.0.1:9797";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  // Resolves absolute URLs for metadata (favicon/OG) when the app is served
-  // from anywhere; defaults to the dev URL at build time.
-  metadataBase: new URL("http://localhost:3000"),
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },

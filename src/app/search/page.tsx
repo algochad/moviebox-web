@@ -65,7 +65,17 @@ export default function SearchPage() {
       try {
         const res = await api.suggest(q);
         if (!inputFocused.current) return;
-        setSuggestions(res.suggestions.slice(0, 8));
+        // The backend merges suggestions across providers, so the same
+        // title can appear twice ("Tenet" + "Tenet") — dupe keys crash
+        // React. Dedupe (case-insensitive) before rendering.
+        const seen = new Set<string>();
+        const unique = res.suggestions.filter((s) => {
+          const k = s.trim().toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+        setSuggestions(unique.slice(0, 8));
         setSuggestOpen(true);
         setHighlight(-1);
       } catch {
@@ -223,7 +233,7 @@ export default function SearchPage() {
             <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-line bg-raised/95 shadow-[0_18px_50px_rgba(0,0,0,0.7)] backdrop-blur">
               {suggestions.map((s, i) => (
                 <button
-                  key={s}
+                  key={`${s.toLowerCase()}::${i}`}
                   onMouseEnter={() => setHighlight(i)}
                   onClick={() => {
                     setQuery(s);
