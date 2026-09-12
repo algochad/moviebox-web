@@ -27,6 +27,9 @@ type StreamRequest struct {
 type StreamResponse struct {
 	Streams []StreamInfo `json:"streams"`
 	Error   string       `json:"error,omitempty"`
+	// Detail carries per-provider failure causes for server logs only.
+	// Web clients must render `error` and never render `detail`.
+	Detail string `json:"detail,omitempty"`
 }
 
 type StreamInfo struct {
@@ -280,11 +283,13 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(streams) == 0 {
-		errMsg := "No streams found from any provider"
+		// The `error` field is rendered by web clients, so it stays generic;
+		// the per-provider `detail` is for server logs and stays unrendered.
+		resp := StreamResponse{Error: "This title isn't available right now. Try again or pick another source."}
 		if len(failures) > 0 {
-			errMsg += ": " + strings.Join(failures, " | ")
+			resp.Detail = strings.Join(failures, " | ")
 		}
-		json.NewEncoder(w).Encode(StreamResponse{Error: errMsg})
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 

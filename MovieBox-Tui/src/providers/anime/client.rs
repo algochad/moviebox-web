@@ -18,14 +18,19 @@ const ALLANIME_PERSISTED_QUERY_HASH: &str = "d405d0edd690624b66baba3068e0edc3ac9
 const ALLANIME_CRYPTO_KEY: &str = "Xot36i3lK3:v1";
 
 const SENSHI_BASE_URL: &str = "https://senshi.live";
-const ANIME_SCRAPER_SIDECAR: &str = "http://127.0.0.1:9798";
+const ANIME_RESOLVER_URL: &str = "http://127.0.0.1:9798";
 
-fn anime_scraper_sidecar() -> String {
+fn anime_resolver_url() -> String {
     std::env::var("ANIME_SIDECAR_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| ANIME_SCRAPER_SIDECAR.to_string())
+        .unwrap_or_else(|| ANIME_RESOLVER_URL.to_string())
 }
+
+/// User-visible copy for anime unavailability. Technical causes go to server
+/// logs; this is the only anime-streams message the web UI may render.
+const ANIME_UNAVAILABLE: &str =
+    "This title isn't available right now. Try again or pick another source.";
 const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
 const SEARCH_QUERY: &str = r#"
@@ -466,9 +471,8 @@ impl AnimeProvider {
             return Err(ProviderError::RateLimited(retry_after));
         }
         if !status.is_success() {
-            return Err(ProviderError::Unavailable(format!(
-                "AniList returned HTTP {status}"
-            )));
+            log::warn!("anime metadata: AniList HTTP {status}");
+            return Err(ProviderError::Unavailable(ANIME_UNAVAILABLE.to_string()));
         }
 
         let parsed: GraphQlResponse<T> = response
@@ -514,9 +518,8 @@ impl AnimeProvider {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ProviderError::Unavailable(format!(
-                "AllAnime returned HTTP {status}"
-            )));
+            log::warn!("anime metadata: AllAnime HTTP {status}");
+            return Err(ProviderError::Unavailable(ANIME_UNAVAILABLE.to_string()));
         }
 
         let parsed: AllAnimeResponse<T> = response
@@ -813,23 +816,29 @@ impl crate::providers::ReleaseProvider for AnimeProvider {
         _season: usize,
         episode: usize,
     ) -> Result<Vec<Release>, ProviderError> {
-        // Try Puppeteer sidecar for AllAnime (handles AA_CRYPTO via headless browser)
-        if let Ok(releases) = self.scraper_allanime_streams(id, episode).await {
-            if !releases.is_empty() {
-                return Ok(releases);
-            }
-        }
+        // Try the anime resolver first (handles AA_CRYPTO via headless browser).
+        let resolver_err = match self.resolver_allanime_streams(id, episode).await {
+            Ok(releases) if !releases.is_empty() => return Ok(releases),
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
 
-        // Fallback to direct AllAnime API (may fail without crypto)
-        if let Ok(releases) = self.allanime_episode_streams(id, episode).await {
-            if !releases.is_empty() {
-                return Ok(releases);
-            }
-        }
+        // Fallback to direct AllAnime API (may fail without crypto).
+        let direct_err = match self.allanime_episode_streams(id, episode).await {
+            Ok(releases) if !releases.is_empty() => return Ok(releases),
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
 
-        Err(ProviderError::Unavailable(
-            "No playable streams found. Ensure the anime scraper sidecar is running (npm run scraper).".to_string()
-        ))
+        // Technical causes stay in server logs; the UI only sees generic copy.
+        log::warn!(
+            "anime episode_streams: no playable streams for id={} ep={}: resolver_err={:?} direct_err={:?}",
+            id,
+            episode,
+            resolver_err,
+            direct_err
+        );
+        Err(ProviderError::Unavailable(ANIME_UNAVAILABLE.to_string()))
     }
 }
 
@@ -854,7 +863,7 @@ impl AnimeProvider {
     }
 
     /// Resolve an AllAnime show id to its display title via the AllAnime
-    /// details query, so the sidecar can search providers by title.
+    /// details query, so the resolver can search providers by title.
     async fn allanime_title_for_id(&self, show_id: &str) -> Result<String, ProviderError> {
         let data: AllAnimeDetailsData = self
             .post_allanime_graphql(
@@ -866,14 +875,14 @@ impl AnimeProvider {
         Ok(Self::allanime_pick_title(&card))
     }
 
-    async fn scraper_allanime_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
+    async fn resolver_allanime_streams(&self, show_id: &str, episode: usize) -> Result<Vec<Release>, ProviderError> {
         // AllAnime ids (e.g. "srGrP23qJnjsHrRYD") fail direct episode
         // queries (Cloudflare captcha on api.allanime.day), so resolve the
-        // title first and let the sidecar search providers by title instead.
+        // title first and let the resolver search providers by title instead.
         if Self::looks_like_allanime_id(show_id) {
             if let Ok(title) = self.allanime_title_for_id(show_id).await {
                 return self
-                    .post_sidecar_resolve(
+                    .post_resolver_resolve(
                         serde_json::json!({
                             "query": title,
                             "episode": episode,
@@ -888,7 +897,7 @@ impl AnimeProvider {
         }
 
         // Fast path for slugs ("one-piece") and numeric ids.
-        self.post_sidecar_resolve(
+        self.post_resolver_resolve(
             serde_json::json!({
                 "showId": show_id,
                 "episode": episode,
@@ -900,35 +909,41 @@ impl AnimeProvider {
         .await
     }
 
-    async fn post_sidecar_resolve(
+    async fn post_resolver_resolve(
         &self,
         body: serde_json::Value,
         show_id: &str,
         episode: usize,
     ) -> Result<Vec<Release>, ProviderError> {
-        let url = format!("{}/resolve", anime_scraper_sidecar());
+        let url = format!("{}/resolve", anime_resolver_url());
 
-        // Sidecar can take 17s+ (AniNeko vibe-proxy startup); use a dedicated long-timeout client
-        let sidecar_client = reqwest::Client::builder()
+        // Resolver can take 17s+ (provider startup); use a dedicated long-timeout client.
+        let resolver_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .map_err(|e| ProviderError::Network(format!("Failed to build sidecar client: {}", e)))?;
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
 
-        let response = sidecar_client.post(&url)
+        let response = resolver_client.post(&url)
             .json(&body)
             .send().await
-            .map_err(|e| ProviderError::Network(format!("Scraper sidecar unavailable: {}", e)))?;
-
+            .map_err(|e| {
+                log::warn!("anime resolver unavailable for id={} ep={}: {e}", show_id, episode);
+                ProviderError::Unavailable(ANIME_UNAVAILABLE.to_string())
+            })?;
         if !response.status().is_success() {
-            return Err(ProviderError::Unavailable(format!("Scraper returned HTTP {}", response.status())));
+            log::warn!("anime resolver HTTP {} for id={} ep={}", response.status(), show_id, episode);
+            return Err(ProviderError::Unavailable(ANIME_UNAVAILABLE.to_string()));
         }
 
         let json: serde_json::Value = response.json().await
             .map_err(|e| ProviderError::Parsing(e.to_string()))?;
-
-        let streams = json.get("streams")
-            .and_then(|s| s.as_array())
-            .ok_or_else(|| ProviderError::Parsing("No streams in scraper response".to_string()))?;
+        if let Some(detail) = json.get("detail").and_then(|v| v.as_str()) {
+            log::warn!("anime resolver detail for id={} ep={}: {detail}", show_id, episode);
+        }
+        let streams = json.get("streams").and_then(|s| s.as_array()).ok_or_else(|| {
+            log::warn!("anime resolver: empty streams envelope for id={} ep={}", show_id, episode);
+            ProviderError::Parsing("resolver returned no streams".to_string())
+        })?;
 
         let mut releases = Vec::new();
         for stream in streams {
@@ -1184,7 +1199,8 @@ impl AnimeProvider {
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(ProviderError::Unavailable(format!("Senshi API returned HTTP {}", response.status())));
+            log::warn!("anime resolver: Senshi HTTP {} for id={} ep={}", response.status(), id, episode);
+            return Ok(Vec::new());
         }
 
         let embeds: Vec<serde_json::Value> = response.json().await

@@ -27,6 +27,12 @@ func searchAnime(query, mode string) ([]providers.SelectionOption, error) {
 	if query == "" {
 		return nil, fmt.Errorf("empty search query")
 	}
+	// AniNeko show ids are URL slugs, never pure numbers: a numeric query can
+	// only be a foreign provider id, so skip instead of returning unrelated
+	// substring matches that would poison title fallback.
+	if strings.Trim(query, "0123456789") == "" {
+		return nil, fmt.Errorf("no results for %q", query)
+	}
 
 	rawURL := fmt.Sprintf("%s/ajax/search?q=%s", baseURL, url.QueryEscape(query))
 	body, err := fetchString(rawURL, baseURL+"/")

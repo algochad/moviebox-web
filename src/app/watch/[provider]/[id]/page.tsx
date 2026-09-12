@@ -21,15 +21,23 @@ export default async function WatchPage({
   const { provider, id } = await params;
   const sp = await searchParams;
   if (!VALID[provider] || !id) notFound();
-  const season = Number.parseInt(sp.s ?? "", 10);
-  const episode = Number.parseInt(sp.e ?? "", 10);
+  const rawSeason = Number.parseInt(sp.s ?? "", 10);
+  const rawEpisode = Number.parseInt(sp.e ?? "", 10);
+  // Anime episodes are 1-based and the resolver requires episode >= 1, so a
+  // bare /watch/anime/<id> link (no ?s= / ?e=) boots S1E1 instead of S0E0.
+  let season = Number.isFinite(rawSeason) ? rawSeason : 0;
+  let episode = Number.isFinite(rawEpisode) ? rawEpisode : 0;
+  if (provider === "anime") {
+    if (!(season > 0)) season = 1;
+    if (!(episode > 0)) episode = 1;
+  }
 
   return (
     <WatchClient
       provider={provider as WatchPlayerProvider}
       id={id}
-      season={Number.isFinite(season) ? season : 0}
-      episode={Number.isFinite(episode) ? episode : 0}
+      season={season}
+      episode={episode}
     />
   );
 }

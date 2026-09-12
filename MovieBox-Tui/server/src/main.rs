@@ -278,13 +278,43 @@ fn provider_of(raw: &str) -> Result<ProviderKind, Response> {
     })
 }
 
+/// User-visible anime failures use the generic unavailable copy; every other
+/// provider keeps its existing message. Technical detail stays in logs.
 fn provider_err_response(err: ProviderError) -> Response {
+    provider_err_response_for(ProviderKind::MovieBox, err)
+}
+
+fn provider_err_response_for(provider: ProviderKind, err: ProviderError) -> Response {
     let status = match err {
         ProviderError::NotFound => StatusCode::NOT_FOUND,
         ProviderError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::BAD_GATEWAY,
     };
+    if provider == ProviderKind::Anime {
+        log::warn!("anime request failed ({status}): {err}");
+        return api_error(status, anime_user_message(status));
+    }
     api_error(status, err.to_string())
+}
+
+/// Generic user-visible copy for anime failures. Status semantics stay intact
+/// (404 vs 502/429) so the UI can still distinguish not-found vs unavailable.
+fn anime_user_message(status: StatusCode) -> &'static str {
+    if status == StatusCode::NOT_FOUND {
+        "This title wasn't found. Try another title or source."
+    } else {
+        "This title isn't available right now. Try again or pick another source."
+    }
+}
+
+/// Anime call sites render the generic copy; every other provider keeps its
+/// existing message. Technical detail stays in server logs.
+fn anime_or(provider: ProviderKind, status: StatusCode, legacy: &str) -> String {
+    if provider == ProviderKind::Anime {
+        anime_user_message(status).to_string()
+    } else {
+        legacy.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +351,7 @@ async fn search(State(state): State<AppState>, Query(p): Query<SearchParams>) ->
             "items": items,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(provider, e),
     }
 }
 
@@ -343,7 +373,7 @@ async fn details(State(state): State<AppState>, Query(p): Query<DetailsParams>) 
             "details": details,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(provider, e),
     }
 }
 
@@ -373,7 +403,7 @@ async fn streams(State(state): State<AppState>, Query(p): Query<StreamsParams>) 
             "releases": releases,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(provider, e),
     }
 }
 
@@ -484,7 +514,13 @@ async fn search_unified(
                 }
             }
             Ok(Err((provider, e))) => {
-                errors.push(serde_json::json!({ "provider": provider, "error": e }));
+                log::warn!("unified search: provider={provider} failed: {e}");
+                let message = if provider == ProviderKind::Anime {
+                    anime_user_message(StatusCode::BAD_GATEWAY).to_string()
+                } else {
+                    e.to_string()
+                };
+                errors.push(serde_json::json!({ "provider": provider, "error": message }));
             }
             Err(e) => errors.push(serde_json::json!({ "error": e.to_string() })),
         }
@@ -535,7 +571,7 @@ async fn anime_seasonal(
             "items": items,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(ProviderKind::Anime, e),
     }
 }
 
@@ -557,7 +593,7 @@ async fn anime_trending(
             "items": items,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(ProviderKind::Anime, e),
     }
 }
 
@@ -573,7 +609,7 @@ async fn anime_popular(
             "items": items,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(ProviderKind::Anime, e),
     }
 }
 
@@ -589,7 +625,7 @@ async fn anime_recent(
             "items": items,
         }))
         .into_response(),
-        Err(e) => provider_err_response(e),
+        Err(e) => provider_err_response_for(ProviderKind::Anime, e),
     }
 }
 
@@ -701,12 +737,13 @@ async fn play(State(state): State<AppState>, Json(req): Json<PlayParams>) -> Res
     let releases = match fetch_releases(&state.svc, provider, &req.id, season, episode).await {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
+            log::warn!("play: empty releases for provider={provider} id={} s={season} ep={episode}", req.id);
             return api_error(
                 StatusCode::NOT_FOUND,
-                "no playable releases found for this title",
+                anime_or(provider, StatusCode::NOT_FOUND, "no playable releases found for this title"),
             )
         }
-        Err(e) => return provider_err_response(e),
+        Err(e) => return provider_err_response_for(provider, e),
     };
 
     // Pick the best release: exact resolution match first, else the
@@ -725,15 +762,18 @@ async fn play(State(state): State<AppState>, Json(req): Json<PlayParams>) -> Res
             .or_else(|| releases.first())
     };
     let Some(release) = release else {
-        return api_error(StatusCode::NOT_FOUND, "no playable release found");
+        log::warn!("play: no release picked for provider={provider} id={}", req.id);
+        return api_error(StatusCode::NOT_FOUND, anime_or(provider, StatusCode::NOT_FOUND, "no playable release found"));
     };
     let Some(mirror) = release.mirrors.first() else {
-        return api_error(StatusCode::NOT_FOUND, "release has no mirrors");
+        log::warn!("play: release without mirrors for provider={provider} id={}", req.id);
+        return api_error(StatusCode::NOT_FOUND, anime_or(provider, StatusCode::NOT_FOUND, "release has no mirrors"));
     };
     if !moviebox_tui::net::is_http_url(&mirror.resolver_url) {
+        log::warn!("play: non-http mirror for provider={provider} id={}: {}", req.id, mirror.resolver_url);
         return api_error(
             StatusCode::BAD_GATEWAY,
-            format!("mirror is not an http(s) url: {}", mirror.resolver_url),
+            anime_or(provider, StatusCode::BAD_GATEWAY, &format!("mirror is not an http(s) url: {}", mirror.resolver_url)),
         );
     }
 

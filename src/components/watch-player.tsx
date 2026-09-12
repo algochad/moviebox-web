@@ -21,7 +21,7 @@ import {
 } from "@/lib/captions";
 import { formatClock } from "@/lib/format";
 import { getHistory } from "@/lib/history";
-import { parseMpdDuration, pickPlayableManifest, rewriteRelativeTo } from "@/lib/playback";
+import { browserSupportsHevc, parseMpdDuration, pickPlayableManifest, rewriteRelativeTo, sniffHls } from "@/lib/playback";
 import { useMyList, useServerHistory, useSession } from "@/lib/session";
 import type { MediaDetails, Release, StreamsResponse, SubtitleOption } from "@/lib/types";
 import { ApiError } from "@/lib/types";
@@ -71,7 +71,10 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
   const watchdogFiredRef = useRef(false);
   const playingSinceRef = useRef(0);
   const playingRef = useRef(false);
-  // codec picture of the last sniffed DASH manifest: null = unknown/fetch failed
+  // Last (currentTime, timestamp) sample seen by the black-frame watchdog.
+  const watchdogLastTimeRef = useRef<number | null>(null);
+  const watchdogLastStampRef = useRef(0);
+  // codec picture of the last sniffed manifest (DASH or HLS): null = unknown/fetch failed
   const hevcOnlyRef = useRef<boolean | null>(null);
   const transcodeActiveRef = useRef(false);
   const [transcodeActive, setTranscodeActiveState] = useState(false);
@@ -317,7 +320,8 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     transcodeIndexUrlRef.current = null;
     remoteSeekBusyRef.current = false;
     pendingSeekRef.current = null;
-    setRemoteSeeking(false);
+    watchdogLastTimeRef.current = null;
+    watchdogLastStampRef.current = 0;
     // reset the absolute-timeline model; a new source run re-derives it
     totalDurationRef.current = null;
     manifestTotalRef.current = null;
@@ -457,7 +461,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         if (await indexHasSegments(indexUrl)) return;
         await delay(1500);
       }
-      throw new Error("Live transcoding is taking longer than expected — try again.");
+      throw new Error("This title isn't available right now. Try again or pick another source.");
     },
     [indexHasSegments, applyTranscodeState],
   );
@@ -522,7 +526,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           // A superseded engine's fatal error must not tear down the live one.
           if (hlsRef.current !== hls || sourceEpochRef.current !== epoch) return;
           teardown();
-          setError("Live transcode playback failed. Retry or pick another source.");
+          setError("This title isn't available right now. Try again or pick another source.");
           setState("error");
         });
         hls.on(Hls.Events.LEVEL_UPDATED, () => {
@@ -549,7 +553,8 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     async (sourceUrl: string) => {
       const ticket = ticketFromUrl(sourceUrl);
       if (!ticket) {
-        setError("This title is HEVC-only and this browser can't decode HEVC. Try another source.");
+        console.warn("[playback] undecodable video with no transcodable ticket; showing generic error");
+        setError("This video can't play on this device right now. Try another source.");
         setState("error");
         return;
       }
@@ -572,12 +577,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         transcodeSessionRef.current = null;
         transcodeIndexUrlRef.current = null;
         if (session) void api.transcodeDelete(session).catch(() => undefined);
+        console.warn("[playback] transcode start failed:", e instanceof Error ? e.message : e);
         if (e instanceof ApiError && e.status === 503) {
-          setError(
-            "This title is HEVC-only and this browser can't decode HEVC. Install ffmpeg on the server to enable live transcoding, or try another source.",
-          );
+          setError("This video can't play on this device right now. Try another source.");
         } else {
-          setError(e instanceof Error ? e.message : "Failed to start live transcoding");
+          setError("This title isn't available right now. Try again or pick another source.");
         }
         setState("error");
       }
@@ -589,6 +593,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     async (wantResolution: number | null, candidateOrder: Release[]) => {
       resumePromptedRef.current = false;
       teardown();
+      // Fresh codec picture for this source: a stale value from the previous
+      // source would misroute the watchdog.
+      hevcOnlyRef.current = null;
+      watchdogFiredRef.current = false;
+      watchdogLastTimeRef.current = null;
+      watchdogLastStampRef.current = 0;
       setState("loading");
       setError(null);
       const video = videoRef.current;
@@ -627,7 +637,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
             /* fall through to error */
           }
         }
-        setError(e instanceof Error ? e.message : String(e));
+        if (provider === "anime") {
+          console.warn("[playback] anime play failed:", e instanceof Error ? e.message : e);
+          setError("This title isn't available right now. Try again or pick another source.");
+        } else {
+          setError(e instanceof Error ? e.message : String(e));
+        }
         setState("error");
         return;
       }
@@ -647,9 +662,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         rel.mirrors.some((m) => m.resolver_url.includes(".mpd"));
 
       if (isDash) {
-        hevcOnlyRef.current = null;
-        watchdogFiredRef.current = false;
-        // Sniff the manifest before dash.js: HEVC-only streams are undecodable
+        // Sniff the manifest before dash.js: HEVC-family streams are undecodable
         // in Chromium/Linux → fall back to live transcode; mixed streams have
         // their HEVC representations stripped client-side.
         let manifestText: string | null = null;
@@ -657,14 +670,14 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           const res = await fetch(source, { cache: "no-store" });
           if (res.ok) manifestText = await res.text();
         } catch {
-          /* proxy unreachable — fall through to the original URL */
+          console.warn("[playback] manifest sniff fetch failed; playing original URL with watchdog cover");
         }
 
         let dashSource = source;
         if (manifestText !== null) {
           const decision = pickPlayableManifest(manifestText, video);
           if (decision.mode === "transcode") {
-            hevcOnlyRef.current = true;
+            console.warn("[playback] HEVC-family video without a fallback for this browser; routing to transcode");
             // Remember the true source runtime from the MPD — the transcode
             // HLS window never exposes it through video.duration.
             const mpdTotal = parseMpdDuration(manifestText);
@@ -674,6 +687,16 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           }
           hevcOnlyRef.current = decision.hevcOnly;
           if (decision.stripped) {
+            if (!/<Representation\b/i.test(decision.text)) {
+              // Stripping left no video representations: the remainder would
+              // play audio-only, so transcode instead of attaching it.
+              console.warn("[playback] HEVC strip left zero video representations; routing to transcode");
+              hevcOnlyRef.current = true;
+              const mpdTotal = parseMpdDuration(manifestText);
+              if (mpdTotal != null) manifestTotalRef.current = mpdTotal;
+              await startTranscode(source);
+              return;
+            }
             // Relative segment references only resolve from the original
             // location, so rewrite them absolute before serving via Blob URL.
             const baseDir = source.slice(0, source.lastIndexOf("/") + 1);
@@ -712,13 +735,13 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           if (dashRef.current !== dash) return; // superseded engine — ignore
           const err = (data as { error?: { code?: number; message?: string } })?.error;
           if (err && (fatal(err.code) || /manifest|initialization/i.test(err.message ?? ""))) {
-            setError("Stream manifest could not be loaded — the source may have expired. Try again.");
+            setError("This title isn't available right now. Try again or pick another source.");
             setState("error");
           }
         });
         dash.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, () => {
           if (dashRef.current !== dash) return; // superseded engine — ignore
-          setError("Playback failed. The stream may have expired — try again.");
+          setError("This title isn't available right now. Try again or pick another source.");
           setState("error");
         });
         try {
@@ -727,13 +750,40 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           dash.setAutoPlay(false);
           void video.play().catch(() => undefined);
         } catch (e) {
-          setError(e instanceof Error ? e.message : "DASH initialization failed");
+          console.warn("[playback] DASH initialization failed:", e instanceof Error ? e.message : e);
+          setError("This title isn't available right now. Try again or pick another source.");
           setState("error");
           return;
         }
       } else {
         const isHls = source.endsWith(".m3u8") || source.includes(".m3u8?");
         if (isHls) {
+          // Gate MSE-backed HLS the same as DASH: an HEVC-only master played
+          // through hls.js on a browser without HEVC decode is the same
+          // black-screen-with-audio failure. Native HLS (no MSE) is left
+          // alone — the element either plays or reports an error itself.
+          const hlsSniffEpoch = sourceEpochRef.current;
+          let hlsText: string | null = null;
+          try {
+            const res = await fetch(source, { cache: "no-store" });
+            if (res.ok) hlsText = await res.text();
+          } catch {
+            /* playlist unreadable — play with watchdog cover */
+          }
+          // A source switch/teardown while the sniff was in flight → abandon.
+          if (sourceEpochRef.current !== hlsSniffEpoch) return;
+          if (hlsText !== null) {
+            const sniff = sniffHls(hlsText);
+            hevcOnlyRef.current = sniff.videoCodecs.length ? sniff.hevcOnly : null;
+            // Only the MSE path (hls.js) needs this gate: native HLS leaves
+            // decode to the element, which errors instead of going black.
+            const mseHls = typeof window !== "undefined" && window.MediaSource != null;
+            if (sniff.hevcOnly && mseHls && !browserSupportsHevc(video)) {
+              console.warn("[playback] HEVC-only HLS for this browser; routing to transcode");
+              await startTranscode(source);
+              return;
+            }
+          }
           void playHls(source);
         } else {
           video.src = source;
@@ -754,15 +804,46 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     setError(null);
     void loadSubtitleOptions();
     try {
-      const [streams, details] = await Promise.all([
-        api.streams(provider, id, season, episode),
-        api.details(provider, id).then((d) => d.details),
-      ]);
+      // Streams are the hard requirement; details are cosmetic (title/poster).
+      // An anipub numeric id (e.g. 8347) resolves streams but 404s details
+      // (AniList-numeric then AllAnime-string lookups both miss), and a joint
+      // Promise.all lets the details miss kill working playback. Load streams
+      // first, then degrade to synthetic anime details on details-404.
+      const streams = await api.streams(provider, id, season, episode);
+      let details: MediaDetails;
+      try {
+        details = await api.details(provider, id).then((d) => d.details);
+      } catch (e) {
+        const detailsMissing = e instanceof ApiError && e.status === 404 && provider === "anime";
+        if (!detailsMissing) throw e;
+        console.warn("[playback] anime details 404; continuing with streams only:", id);
+        details = {
+          id: { provider, value: id },
+          title: id,
+          media_type: "anime" as const,
+          year: null,
+          description: null,
+          tagline: null,
+          imdb_rating: null,
+          director: null,
+          stars: null,
+          prints: null,
+          audios: null,
+          poster_url: null,
+          duration: null,
+          genres: [],
+          seasons:
+            season > 0 && episode > 0
+              ? [{ number: season, episodes: [{ season, number: episode, title: null as string | null }] }]
+              : [],
+          dubs: [],
+          anime: null,
+        };
+      }
       setLoaded({ streams, details });
-
       const choices = streams.releases.filter((r) => r.mirrors.length > 0);
       if (!choices.length) {
-        setError("No playable sources found for this title.");
+        setError("This title isn't available right now. Try again or pick another source.");
         setState("error");
         return;
       }
@@ -777,11 +858,15 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       );
       await startSource(null, choices);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load playback sources");
+      if (provider === "anime") {
+        console.warn("[playback] anime load failed:", e instanceof Error ? e.message : e);
+        setError("This title isn't available right now. Try again or pick another source.");
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to load playback sources");
+      }
       setState("error");
     }
   }, [provider, id, season, episode, startSource, loadSubtitleOptions]);
-
   useEffect(() => {
     void boot();
     return () => {
@@ -1331,11 +1416,9 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       if (remoteSeekBusyRef.current) return;
       const code = video.error.code;
       if (code === 4) {
-        setError("This stream can't be played in your browser (unsupported codec or expired link).");
-      } else if (code === 2) {
-        setError("Network error while streaming — check your connection and retry.");
+        setError("This video can't play on this device right now. Try another source.");
       } else {
-        setError("Playback error — the source may have expired. Go back and try again.");
+        setError("This title isn't available right now. Try again or pick another source.");
       }
       setState("error");
     };
@@ -1367,6 +1450,7 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         pendingSeekRef.current = null;
       }, 1500);
     };
+    video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
     video.addEventListener("ended", onEnded);
     video.addEventListener("error", onError);
@@ -1389,11 +1473,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pokeControls, saveNow, maybeNextEpisode, provider, id, season, episode, showNextUp]);
 
-  // ---------------- watchdog: DASH "playing but black" fallback ----------------
-  // Some browsers partially advertise HEVC support and then never decode a
-  // frame. If a DASH source that is HEVC-only (or of unknown codecs) has been
-  // "playing" for ≥6s with no decoded frame, tear it down and retry that same
-  // source through the live transcoder, once.
+  // ---------------- watchdog: "playing but black" fallback ----------------
+  // Covers DASH and MSE-backed HLS uniformly. Triggers only on the true
+  // black-with-audio signature: the timeline is advancing (audio decodes)
+  // while no video frame has decoded (videoWidth == 0) on a source whose
+  // codecs are HEVC-family or unknown — then retries that source through
+  // the live transcoder, once. A frozen timeline is a stall, not our case.
   useEffect(() => {
     const timer = window.setInterval(() => {
       const video = videoRef.current;
@@ -1402,9 +1487,22 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       if (transcodeActiveRef.current || !playingRef.current) return;
       if (Date.now() - playingSinceRef.current < 6000) return;
       if (video.videoWidth > 0 || video.paused) return;
-      if (hevcOnlyRef.current === false) return; // decodable AVC — not our case
+      if (hevcOnlyRef.current === false) return; // decodable video — not our case
       const activeSource = currentSourceRef.current;
-      if (!activeSource || !(dashRef.current || blobUrlRef.current)) return;
+      if (!activeSource || !(dashRef.current || blobUrlRef.current || hlsRef.current)) return;
+      // Require an advancing timeline: audio playing with no picture.
+      const now = Date.now();
+      const pos = video.currentTime;
+      if (watchdogLastTimeRef.current == null || now - watchdogLastStampRef.current > 5000) {
+        // (Re)baseline and re-check next tick instead of firing blind.
+        watchdogLastTimeRef.current = pos;
+        watchdogLastStampRef.current = now;
+        return;
+      }
+      const advanced = pos > (watchdogLastTimeRef.current ?? pos);
+      watchdogLastTimeRef.current = pos;
+      watchdogLastStampRef.current = now;
+      if (!advanced) return;
       watchdogFiredRef.current = true;
       teardown();
       setState("loading");
