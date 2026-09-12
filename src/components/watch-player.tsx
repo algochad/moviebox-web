@@ -256,6 +256,15 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     const hls = hlsRef.current;
     if (hls) {
       hlsRef.current = null;
+      // Detach first so in-flight buffer callbacks stop touching the
+      // element; destroy() then releases the engine. Separate try blocks:
+      // detach throwing must not skip destroy (zombie engine keeps
+      // appending to a dead SourceBuffer -> InvalidStateError spam).
+      try {
+        hls.detachMedia();
+      } catch {
+        /* already detached */
+      }
       try {
         hls.destroy();
       } catch {
@@ -272,20 +281,33 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     if (dash) {
       dashRef.current = null;
       try {
-        dash.reset();
+        // attachView(null) unbinds the element synchronously; destroy() calls
+        // reset() internally plus releases the singleton context. Separate
+        // try blocks so a detach failure can't skip destroy (leaked engine
+        // keeps firing SourceBuffer callbacks at the reused element).
+        dash.attachView(null as unknown as HTMLElement);
+      } catch {
+        /* already detached */
+      }
+      try {
+        dash.destroy();
       } catch {
         /* already torn down */
       }
     }
+    const video = videoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* already paused */
+      }
+      video.removeAttribute("src");
+      video.load();
+    }
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
-    }
-    const video = videoRef.current;
-    if (video) {
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
     }
     currentSourceRef.current = null;
     transcodeIndexUrlRef.current = null;
@@ -444,6 +466,11 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     hlsRef.current = null;
     if (hls) {
       try {
+        hls.detachMedia();
+      } catch {
+        /* already detached */
+      }
+      try {
         hls.destroy();
       } catch {
         /* already torn down */
@@ -455,8 +482,13 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
     async (indexUrl: string) => {
       const video = videoRef.current;
       if (!video) return;
+      // Epoch at call time: the hls.js import below awaits, and a source
+      // switch/teardown/unmount in between must not attach a zombie engine
+      // to the (possibly reused) video element.
+      const epoch = sourceEpochRef.current;
       transcodeIndexUrlRef.current = indexUrl;
       const startPlayback = () => {
+        if (sourceEpochRef.current !== epoch || hlsRef.current == null) return;
         reapplyCaptions();
         window.setTimeout(() => {
           reapplyCaptions();
@@ -466,11 +498,15 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
       };
       // Exception: static import crashes SSR; load only when needed in browser
       const Hls = (await import("hls.js")).default;
+      // A teardown while the import was in flight → abandon, don't attach.
+      if (sourceEpochRef.current !== epoch || !transcodeActiveRef.current) return;
       if (Hls.isSupported()) {
         const hls = new Hls({ maxBufferLength: 40, backBufferLength: Infinity });
         hlsRef.current = hls;
         hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean }) => {
           if (!data.fatal) return;
+          // A superseded engine's fatal error must not tear down the live one.
+          if (hlsRef.current !== hls || sourceEpochRef.current !== epoch) return;
           teardown();
           setError("Live transcode playback failed. Retry or pick another source.");
           setState("error");
@@ -636,12 +672,31 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
         }
 
         // Exception: static import crashes SSR; load only when needed in browser
+        const dashModuleEpoch = sourceEpochRef.current;
         const dashjs = (await import("dashjs")).default;
+        // A teardown while the import was in flight → don't create an engine
+        // at all (it would bind the reused video element as a zombie).
+        if (sourceEpochRef.current !== dashModuleEpoch) return;
         const dash = dashjs.MediaPlayer().create();
         dashRef.current = dash;
+        // The teardown below detaches the video element synchronously and
+        // destroys the player, but dash.js fires SourceBuffer callbacks from
+        // its own timers — "getAllBufferRanges exception" / "append failed"
+        // InvalidStateError noise keeps arriving from the dead engine and
+        // Next's dev overlay relays every console.error as "[browser]".
+        // Suppress internal error logging; fatal manifest/init failures
+        // still surface through our own ERROR/PLAYBACK_ERROR handlers.
+        try {
+          // LOG_LEVEL_FATAL = 1: only fatal internal logs; the enum isn't
+          // exported in the typings, so the literal stands in for it.
+          dash.updateSettings({ debug: { logLevel: 1 } });
+        } catch {
+          /* older dash.js without updateSettings — leave logging as-is */
+        }
         const fatal = (code: number | undefined) =>
           code != null && (code === 27 || code === 34 || code === 2 || code === 11);
         dash.on(dashjs.MediaPlayer.events.ERROR, (data: unknown) => {
+          if (dashRef.current !== dash) return; // superseded engine — ignore
           const err = (data as { error?: { code?: number; message?: string } })?.error;
           if (err && (fatal(err.code) || /manifest|initialization/i.test(err.message ?? ""))) {
             setError("Stream manifest could not be loaded — the source may have expired. Try again.");
@@ -649,10 +704,12 @@ export function WatchPlayer({ provider, id, season, episode }: Props) {
           }
         });
         dash.on(dashjs.MediaPlayer.events.PLAYBACK_ERROR, () => {
+          if (dashRef.current !== dash) return; // superseded engine — ignore
           setError("Playback failed. The stream may have expired — try again.");
           setState("error");
         });
         try {
+          if (sourceEpochRef.current !== dashModuleEpoch) return;
           dash.initialize(video, dashSource, true);
           dash.setAutoPlay(false);
           void video.play().catch(() => undefined);
