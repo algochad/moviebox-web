@@ -164,7 +164,8 @@ input[type="range"].player-range::-webkit-slider-thumb {
   transition: opacity 0.15s ease;
 }
 input[type="range"].player-range:hover::-webkit-slider-thumb,
-input[type="range"].player-range:focus::-webkit-slider-thumb {
+input[type="range"].player-range:focus::-webkit-slider-thumb,
+input[type="range"].player-range:active::-webkit-slider-thumb {
   opacity: 1;
 }
 input[type="range"].player-range::-moz-range-thumb {
@@ -177,7 +178,8 @@ input[type="range"].player-range::-moz-range-thumb {
   transition: opacity 0.15s ease;
 }
 input[type="range"].player-range:hover::-moz-range-thumb,
-input[type="range"].player-range:focus::-moz-range-thumb {
+input[type="range"].player-range:focus::-moz-range-thumb,
+input[type="range"].player-range:active::-moz-range-thumb {
   opacity: 1;
 }
 
